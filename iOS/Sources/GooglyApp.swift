@@ -186,65 +186,48 @@ struct RootView: View {
     }
 }
 
-/// Shows which mode he's in: a solid border hugging the screen's own rounded corners (blue while he listens),
-/// plus a small label in the corner. Following your mouse is just a little eye icon. No glows.
+/// Keeps the existing solid listening border. The compact status icon lives with the controls.
 struct ModeIndicator: View {
     let state: LiveVoice.State
-
-    private struct Look {
-        let color: Color
-        let label: String?
-        let icon: String
-        let border: CGFloat   // 0 = no border
-        let pulse: Double     // pulses per second (opacity only)
-    }
-
-    private static let blue = Color(hex: 0x4F8BFF)
-
-    private var look: Look {
+    private var color: Color {
         switch state {
-        case .asleep:    return Look(color: Color(hex: Palette.inkSoft), label: nil, icon: "eye.fill", border: 0, pulse: 0)
-        case .waking:    return Look(color: Color(hex: 0xFFD66B), label: "Waking up", icon: "sun.max.fill", border: 6, pulse: 1.6)
-        case .listening: return Look(color: Self.blue, label: "Listening · hold to ask", icon: "ear", border: 10, pulse: 0)
-        case .asking:    return Look(color: Self.blue, label: "I'm all ears", icon: "mic.fill", border: 16, pulse: 1.2)
-        case .thinking:  return Look(color: Color(hex: 0xC79BFF), label: "Thinking", icon: "sparkles", border: 8, pulse: 1.1)
-        case .speaking:  return Look(color: Color(hex: 0xFF9AD0), label: "Replying", icon: "bubble.left.fill", border: 8, pulse: 0)
+        case .asleep: return .clear
+        case .waking: return Color(hex: 0xFFD66B)
+        case .listening, .asking: return Color(hex: 0x4F8BFF)
+        case .thinking: return Color(hex: 0xC79BFF)
+        case .speaking: return Color(hex: 0xFF9AD0)
         }
     }
-
-    /// The phone screen's own corner radius, so the border lines up with the glass.
+    private var border: CGFloat {
+        switch state {
+        case .asleep: return 0
+        case .waking: return 6
+        case .listening: return 10
+        case .asking: return 16
+        case .thinking, .speaking: return 8
+        }
+    }
+    private var pulse: Double {
+        switch state {
+        case .waking: return 1.6
+        case .asking: return 1.2
+        case .thinking: return 1.1
+        default: return 0
+        }
+    }
     private static let screenCornerRadius: CGFloat = {
         #if canImport(UIKit)
         if let radius = UIScreen.main.value(forKey: "_displayCornerRadius") as? CGFloat, radius > 0 { return radius }
         #endif
         return 55
     }()
-
     var body: some View {
-        let look = look
-        TimelineView(.animation(paused: look.pulse == 0)) { context in
+        TimelineView(.animation(paused: pulse == 0)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
-            let wave = look.pulse > 0 ? 0.5 + 0.5 * sin(t * look.pulse * 2 * .pi) : 1
-            ZStack(alignment: .bottomTrailing) {
-                if look.border > 0 {
-                    RoundedRectangle(cornerRadius: Self.screenCornerRadius, style: .continuous)
-                        .strokeBorder(look.color, lineWidth: look.border)
-                        .opacity(look.pulse > 0 ? 0.65 + 0.35 * wave : 1)
-                }
-                HStack(spacing: 7) {
-                    Image(systemName: look.icon)
-                        .font(.system(size: 14, weight: .bold))
-                    if let label = look.label {
-                        Text(label).font(.fredoka(16))
-                    }
-                }
-                .foregroundStyle(look.label == nil ? look.color.opacity(0.7) : .white)
-                .padding(.horizontal, look.label == nil ? 0 : 14)
-                .frame(minWidth: 34, minHeight: 34)
-                .background(Capsule().fill(look.label == nil ? Color.white.opacity(0.06) : look.color))
-                .padding(.bottom, 14 + look.border)
-                .padding(.trailing, 24 + look.border)
-            }
+            let wave = pulse > 0 ? 0.5 + 0.5 * sin(t * pulse * 2 * .pi) : 1
+            RoundedRectangle(cornerRadius: Self.screenCornerRadius, style: .continuous)
+                .strokeBorder(color, lineWidth: border)
+                .opacity(pulse > 0 ? 0.65 + 0.35 * wave : 1)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)

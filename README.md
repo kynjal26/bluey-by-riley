@@ -10,7 +10,7 @@ Bluey is a little blueberry focus friend. Keep your iPhone sideways under your M
 4. Grant **Screen Recording** on Mac. If macOS requests it, quit and reopen Bluey after granting access. **Microphone** on iPhone enables voice; **Camera** is used only for QR pairing; **Local Network** lets the phone find the Mac. Accessibility is optional for the existing explicitly requested computer-control tools, and isn't needed for focus classification.
 5. Hold Bluey's face and describe the task, optionally giving a duration: “I'm making a Codex video for 30 minutes.” Release to start. The microphone captures while held and buffers the beginning in memory while the voice connection starts. Only held audio is sent; no spoken audio output is played. The default is 30 minutes, with a 1–240 minute range. You can also tap **Focus**, type a task, and start there.
 
-The task appears at the phone's top left. A small white countdown appears at the Mac's bottom right. Pause, resume and end are available on the phone and in the Mac menu, and through voice. **⌃⌥S** pauses focus and stops computer control. Pause, end, expiry, Mac lock/sleep, phone backgrounding or disconnect stops monitoring. Reconnection and unlocking never resume it automatically. A missing heartbeat is detected within five seconds; outstanding results are discarded.
+The task appears at the phone's top left, with a large white countdown at bottom right on both devices. Small pause/resume, end and Focus icons sit at the phone's bottom left, alongside the listening status icon. Hold Bluey's face to speak. Controls are also available in the Mac menu and through voice. **⌃⌥S** pauses focus and stops computer control. Pause, end, expiry, Mac lock/sleep, phone backgrounding or disconnect stops monitoring. Reconnection and unlocking never resume it automatically. A missing heartbeat is detected within five seconds; outstanding results are discarded.
 
 ## Screen sharing and privacy
 
@@ -32,7 +32,7 @@ Related tutorials, research, reading and waiting for a build can support the tas
 - A nudge resets the run and has a 120-second cooldown. Model estimates are not calibrated certainty; these are conservative initial product thresholds, not measured accuracy guarantees.
 - Responses (`gpt-5.5`, structured output, `store: false`) writes one gentle sentence. A failure falls back to “Are you sure you're on task right now?” It can select only an existing OCR line, with an exact matching quote. The app re-reads its position and checks the foreground app before pointing. Ambiguous or changed targets get a bubble alone.
 
-Finished sessions show a rectangular timeline on iPhone: green on-task samples, peach detours, grey unknown/unavailable/unchecked time. It represents 30-second observations rather than an exact time audit. Paused time is excluded.
+Sessions show a rectangular timeline on iPhone: green on-task samples, peach detours, grey unknown/unavailable/unchecked time. Tap the timeline or **On task**, **Detour**, or **Unknown** to inspect individual checks, their category probabilities and separate overall decision confidence. Older checks may have only the Detour probability; missing values are labelled, never inferred. Failed or stale checks have no valid confidence estimate. The timeline represents 30-second observations rather than an exact time audit. Paused time is excluded.
 
 ## Build and run
 

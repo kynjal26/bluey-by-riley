@@ -72,9 +72,30 @@ final class FocusTests: XCTestCase {
         let good = Data(#"{"answers":[{"type":"choice","name":"activity","choice":"off_task","confidence":0.7,"probabilities":[{"value":"on_task","probability":0.1},{"value":"off_task","probability":0.8},{"value":"uncertain","probability":0.1}]}]}"#.utf8)
         let result = try FocusDecision.decode(good)
         XCTAssertEqual(result.probability, 0.8); XCTAssertEqual(result.confidence, 0.7)
+        XCTAssertEqual(result.probabilities, ["on_task": 0.1, "off_task": 0.8, "uncertain": 0.1])
         for bad in [#"{"answers":[{"type":"refusal","name":"activity"}]}"#, "{}", String(data: good, encoding: .utf8)!.replacingOccurrences(of: "0.8", with: "1.8")] {
             XCTAssertThrowsError(try FocusDecision.decode(Data(bad.utf8)))
         }
+    }
+    func testChoiceEstimatesSurviveSyncAndOlderHistoryDoesNotInventValues() throws {
+        let check = FocusCheck(elapsed: 30, activity: .onTask, probability: 0.15, confidence: 0.73,
+                               probabilities: ["on_task": 0.65, "off_task": 0.15, "uncertain": 0.2])
+        var session = FocusSession(task: "Make a video")
+        session.checks = [check]
+        let sync = FocusSync(current: session, history: [session], revision: 10)
+        let decoded = try JSONDecoder().decode(FocusSync.self, from: JSONEncoder().encode(sync))
+        XCTAssertEqual(decoded.current?.checks.first, check)
+        XCTAssertEqual(check.estimate(for: .onTask), 0.65)
+        XCTAssertEqual(check.estimate(for: .uncertain), 0.2)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(check)) as? [String: Any])
+        old.removeValue(forKey: "probabilities")
+        let older = try JSONDecoder().decode(FocusCheck.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertNil(older.probabilities)
+        XCTAssertNil(older.estimate(for: .onTask))
+        XCTAssertNil(older.estimate(for: .uncertain))
+        XCTAssertEqual(older.estimate(for: .offTask), 0.15)
+        let skipped = FocusCheck(elapsed: 60, activity: .unavailable, probability: 0.99, confidence: 0.99)
+        XCTAssertNil(skipped.estimate(for: .offTask))
     }
     func testEncryptedMessagesRejectReplayWrongKeyAndWrongDirection() throws {
         let key = Data(repeating: 7, count: 32), challenge = Data(repeating: 4, count: 32)

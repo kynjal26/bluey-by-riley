@@ -142,7 +142,8 @@ final class FocusCompanion {
                 guard self.allowed, self.generation == token, !Task.isCancelled else { return }
                 let age = now() - began
                 var check = FocusCheck(elapsed: session.elapsed, activity: age <= 20 ? answer.activity : .unavailable,
-                                       probability: answer.probability, confidence: answer.confidence)
+                                       probability: answer.probability, confidence: answer.confidence,
+                                       probabilities: age <= 20 ? answer.probabilities : nil)
                 let shouldNudge = self.policy.observe(check, age: age)
                 self.current?.detail = age > 20 ? "Last check was stale; skipped" : answer.activity == .uncertain ? "Not enough context to judge" : "Last check: \(answer.activity == .onTask ? "on task" : "possible detour")"
                 self.current?.checks.append(check)
@@ -216,13 +217,13 @@ private final class FocusCountdown {
     func update(_ session: FocusSession?) {
         guard let session, session.status != .ended else { window?.orderOut(nil); return }
         if window == nil, let screen = NSScreen.screens.first {
-            let panel = NSPanel(contentRect: CGRect(x: screen.visibleFrame.maxX - 180, y: screen.visibleFrame.minY + 16, width: 160, height: 30),
+            let panel = NSPanel(contentRect: CGRect(x: screen.visibleFrame.maxX - 452, y: screen.visibleFrame.minY + 24, width: 420, height: 112),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
             panel.level = .floating; panel.ignoresMouseEvents = true
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            label.frame = CGRect(x: 0, y: 0, width: 160, height: 28)
-            label.font = .monospacedDigitSystemFont(ofSize: 17, weight: .medium)
+            label.frame = CGRect(x: 0, y: 0, width: 420, height: 108)
+            label.font = .monospacedDigitSystemFont(ofSize: 76, weight: .semibold)
             label.textColor = .white; label.alignment = .right
             panel.contentView?.addSubview(label); window = panel
         }

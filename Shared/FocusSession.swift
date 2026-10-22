@@ -10,10 +10,22 @@ public struct FocusCheck: Codable, Identifiable, Equatable, Sendable {
     public var activity: FocusActivity
     public var probability: Double
     public var confidence: Double
+    /// Full choice estimates. Optional so history from older builds still decodes.
+    public var probabilities: [String: Double]?
     public var nudged = false
-    public init(elapsed: Double, activity: FocusActivity, probability: Double = 0, confidence: Double = 0) {
+    public init(elapsed: Double, activity: FocusActivity, probability: Double = 0, confidence: Double = 0,
+                probabilities: [String: Double]? = nil) {
         self.elapsed = elapsed; self.activity = activity
         self.probability = probability; self.confidence = confidence
+        self.probabilities = probabilities
+    }
+    public func estimate(for category: FocusActivity) -> Double? {
+        guard [.onTask, .offTask, .uncertain].contains(activity),
+              [.onTask, .offTask, .uncertain].contains(category) else { return nil }
+        // Older checks retained only P(off_task). Never infer P(on_task) from its complement.
+        let value = probabilities?[category.rawValue] ?? (category == .offTask ? probability : nil)
+        guard let value, value.isFinite, (0...1).contains(value) else { return nil }
+        return value
     }
 }
 
@@ -93,6 +105,7 @@ public struct FocusDecision: Equatable {
     public let activity: FocusActivity
     public let probability: Double
     public let confidence: Double
+    public let probabilities: [String: Double]
     public enum DecodeError: LocalizedError {
         case invalidAnswer
         public var errorDescription: String? { "Decisions returned an unsupported or malformed answer. This check was skipped." }
@@ -117,6 +130,6 @@ public struct FocusDecision: Equatable {
         }
         guard abs(values.values.reduce(0, +) - 1) < 0.02,
               let off = values["off_task"] else { throw DecodeError.invalidAnswer }
-        return FocusDecision(activity: activity, probability: off, confidence: confidence)
+        return FocusDecision(activity: activity, probability: off, confidence: confidence, probabilities: values)
     }
 }

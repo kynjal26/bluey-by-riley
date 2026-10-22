@@ -23,25 +23,81 @@ struct FocusFaceHUD: View {
                 Spacer()
             }
             Spacer()
-            HStack(spacing: 14) {
-                if !link.connected {
-                    Button("Pair Mac", action: pair)
-                } else if let session = focus.current, session.status != .ended {
-                    Button(session.status == .running ? "Pause" : "Resume") {
-                        focus.command(session.status == .running ? "focusPause" : "focusResume")
-                    }.disabled(!focus.fresh)
-                    Button("End") { focus.command("focusEnd") }.disabled(!focus.fresh)
+            HStack(alignment: .bottom, spacing: 12) {
+                HStack(spacing: 2) {
+                    if !link.connected {
+                        icon("qrcode.viewfinder", label: "Pair Mac", action: pair)
+                    } else if let session = focus.current, session.status != .ended {
+                        icon(session.status == .running ? "pause.fill" : "play.fill",
+                             label: session.status == .running ? "Pause focus" : "Resume focus") {
+                            focus.command(session.status == .running ? "focusPause" : "focusResume")
+                        }.disabled(!focus.fresh)
+                        icon("stop.fill", label: "End focus") { focus.command("focusEnd") }
+                            .disabled(!focus.fresh)
+                    }
+                    icon("scope", label: "Focus sessions", action: open)
+                    Image(systemName: voiceIcon)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(live.state == .asleep ? .white.opacity(0.35) : .white)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(Color.white.opacity(0.07)))
+                        .padding(5)
+                        .accessibilityLabel(voiceStatus)
                 }
-                Button("Focus", action: open)
-                Spacer()
-            }.font(.plexSans(13).weight(.semibold)).buttonStyle(.bordered).tint(.white)
-        }.foregroundStyle(.white).padding(.leading, 24).padding(.top, 18).padding(.bottom, 12)
+                Spacer(minLength: 24)
+                Text(FocusSession.clock(countdown))
+                    .font(.system(size: 76, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue(FocusSession.clock(countdown))
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 18)
+    }
+    private func icon(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(Color.white.opacity(0.09)))
+                .padding(5)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+    private var countdown: Double {
+        focus.current.flatMap { $0.status == .ended ? nil : $0.remaining } ?? 1800
+    }
+    private var voiceIcon: String {
+        switch live.state {
+        case .asleep: return "mic.slash"
+        case .waking: return "arrow.triangle.2.circlepath"
+        case .listening: return "ear"
+        case .asking: return "mic.fill"
+        case .thinking: return "ellipsis"
+        case .speaking: return "bubble.left.fill"
+        }
+    }
+    private var voiceStatus: String {
+        switch live.state {
+        case .asleep: return "Hold Bluey to speak"
+        case .waking: return "Voice connecting"
+        case .listening: return "Listening. Hold Bluey to ask"
+        case .asking: return "Recording your request"
+        case .thinking: return "Thinking"
+        case .speaking: return "Replying"
+        }
     }
     private var status: String {
         guard link.connected else { return "Pair your Mac to focus together" }
-        guard let session = focus.current, session.status != .ended else { return "Hold Bluey and describe a task · 30 min default" }
+        guard let session = focus.current, session.status != .ended else { return "Hold Bluey and describe a task" }
         guard focus.fresh else { return "Connection lost · monitoring will pause" }
-        return "\(FocusSession.clock(session.remaining)) · \(session.status == .paused ? "Paused" : "Focusing together")"
+        return session.status == .paused ? "Paused" : "Focusing together"
     }
 }
 
@@ -101,22 +157,142 @@ struct FocusDashboard: View {
 
 private struct FocusSummary: View {
     let session: FocusSession
+    private struct Inspection: Identifiable { let id: String }
+    @State private var inspection: Inspection?
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(session.task).font(.fredoka(22))
             Text("\(session.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(FocusSession.clock(session.elapsed)) active")
                 .font(.plexMono(11)).foregroundStyle(.secondary)
-            FocusTimeline(session: session).frame(height: 40)
+            Button { inspect("all") } label: {
+                FocusTimeline(session: session).frame(height: 40)
+            }.buttonStyle(.plain).accessibilityLabel("Inspect focus checks")
             HStack(spacing: 16) {
-                legend("On task", .green); legend("Detour", Color(hex: 0xEBAC73)); legend("Unknown / unchecked", .gray)
+                legend("On task", .green, category: "on_task")
+                legend("Detour", Color(hex: 0xEBAC73), category: "off_task")
+                legend("Unknown", .gray, category: "uncertain")
             }.font(.plexSans(11))
-            Text("30-second observations, not an exact time audit. Pauses are excluded.")
+            Text("Tap a category to see probabilities and confidence. Grey also includes unchecked time. Pauses are excluded.")
                 .font(.plexSans(11)).foregroundStyle(.secondary)
         }
+        .sheet(item: $inspection) { selection in FocusCheckList(session: session, category: selection.id) }
     }
-    private func legend(_ name: String, _ color: Color) -> some View {
-        HStack(spacing: 5) { Rectangle().fill(color).frame(width: 9, height: 9); Text(name) }
+    private func inspect(_ category: String) {
+        inspection = Inspection(id: category)
     }
+    private func legend(_ name: String, _ color: Color, category: String) -> some View {
+        Button { inspect(category) } label: {
+            HStack(spacing: 5) { Rectangle().fill(color).frame(width: 9, height: 9); Text(name) }
+                .frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Inspect \(name) confidence")
+    }
+}
+
+private struct FocusCheckList: View {
+    let session: FocusSession
+    @State var category: String
+    @Environment(\.dismiss) private var dismiss
+    private var checks: [FocusCheck] {
+        session.checks.reversed().filter {
+            if $0.activity == .paused { return false }
+            if category == "all" { return true }
+            if category == "uncertain" { return [.uncertain, .unavailable].contains($0.activity) }
+            return $0.activity.rawValue == category
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Picker("Show checks", selection: $category) {
+                        Text("All").tag("all")
+                        Text("On task").tag("on_task")
+                        Text("Detour").tag("off_task")
+                        Text("Unknown").tag("uncertain")
+                    }.pickerStyle(.segmented)
+                    Text("Each check is a 30-second observation. Category probabilities and overall decision confidence are separate model estimates, not guarantees.")
+                        .font(.plexSans(13)).foregroundStyle(.secondary)
+                }
+                Section("Latest checks first") {
+                    if checks.isEmpty {
+                        Text("No checks recorded in this category yet. Unchecked time has no confidence estimate.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(checks) { check in
+                        NavigationLink {
+                            FocusCheckDetail(check: check)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text(check.activity.focusName).font(.fredoka(20))
+                                    Spacer()
+                                    Text(FocusSession.clock(check.elapsed)).font(.plexMono(12))
+                                }
+                                if let estimate = check.estimate(for: check.activity) {
+                                    Text("Category probability \(estimate.focusPercent) · confidence \(check.confidence.focusPercent)")
+                                        .font(.plexSans(12)).foregroundStyle(.secondary)
+                                } else if check.activity == .unavailable {
+                                    Text("Check unavailable or stale · no valid estimate")
+                                        .font(.plexSans(12)).foregroundStyle(.secondary)
+                                } else {
+                                    Text("Category probability not saved · confidence \(check.confidence.focusPercent)")
+                                        .font(.plexSans(12)).foregroundStyle(.secondary)
+                                }
+                            }.padding(.vertical, 4)
+                        }
+                    }
+                }
+            }.navigationTitle("Focus checks")
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }.preferredColorScheme(.dark)
+    }
+}
+
+private struct FocusCheckDetail: View {
+    let check: FocusCheck
+    var body: some View {
+        List {
+            Section {
+                LabeledContent("Observation", value: check.activity.focusName)
+                LabeledContent("Active session time", value: FocusSession.clock(check.elapsed))
+            }
+            if check.activity == .unavailable {
+                Text("This check failed or arrived too late. It has no valid confidence estimate and does not count toward a nudge.")
+            } else {
+                Section("Category probabilities") {
+                    ForEach([FocusActivity.onTask, .offTask, .uncertain], id: \.rawValue) { category in
+                        LabeledContent(category.focusName, value: check.estimate(for: category)?.focusPercent ?? "Not saved")
+                    }
+                }
+                Section("Decision confidence") {
+                    LabeledContent("Overall confidence", value: check.confidence.focusPercent)
+                    Text("Confidence is reported separately by the API. It is not the probability of a particular category.")
+                        .font(.plexSans(13)).foregroundStyle(.secondary)
+                }
+                if check.probabilities == nil {
+                    Text("This older check saved only the Detour probability and overall confidence. The other probabilities weren't saved.")
+                        .foregroundStyle(.secondary)
+                }
+                if check.nudged { Label("Bluey gave a gentle nudge after this check", systemImage: "bubble.left") }
+            }
+        }.navigationTitle("Check details")
+    }
+}
+
+private extension FocusActivity {
+    var focusName: String {
+        switch self {
+        case .onTask: return "On task"
+        case .offTask: return "Detour"
+        case .uncertain: return "Unknown"
+        case .unavailable: return "Unavailable"
+        case .paused: return "Paused"
+        }
+    }
+}
+
+private extension Double {
+    var focusPercent: String { formatted(.percent.precision(.fractionLength(0...1))) }
 }
 
 struct FocusTimeline: View {
