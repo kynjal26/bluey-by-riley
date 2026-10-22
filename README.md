@@ -78,6 +78,8 @@ Tests cover timing, resets, cooldowns, stale/invalid answers, pause/resume/expir
 swift run GooglyMac --focus-api-test
 ```
 
+With a separate signed Bluey app already running, `build/Bluey.app/Contents/MacOS/GooglyMac --focus-link-test` exercises real Bonjour discovery, authenticated encryption, a 30-second desktop capture/Decisions check and synchronized pause/resume/end. It creates a labelled integration-test entry in history and skips an existing active user session. `--focus-screen-test` makes one real desktop capture/Decisions request without saving an image. These probes share your screen with OpenAI; do not run them while displaying private content.
+
 Real phone pairing, hold-to-start voice, permission prompts, chirps, pointing and full two-to-four-minute monitoring still need a device run. A successful build or synthetic probe alone is not proof of these behaviors.
 
 ## Existing capabilities
@@ -93,4 +95,4 @@ The existing manual pointing, voice context, research cards, Codex controller an
 
 ## License
 
-Public domain under the Unlicense.
+Public domain under [the Unlicense](LICENSE). Do whatever you want with it.
