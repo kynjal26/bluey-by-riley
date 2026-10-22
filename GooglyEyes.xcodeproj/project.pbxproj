@@ -18,6 +18,7 @@
 		6F0FE87629E2A7A20676322C /* ChunkRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ED2232FD362786D7A5D38B8 /* ChunkRecorder.swift */; };
 		6FBD9F2B49D3FD5A78CC4EF1 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83073BF3A1F734ADC97138DF /* SessionStore.swift */; };
 		772A196648CCCC476A2E36F7 /* OFL-Fredoka.txt in Resources */ = {isa = PBXBuildFile; fileRef = 020C853B32D37028CE040148 /* OFL-Fredoka.txt */; };
+		89CA80F59236155E52CDA9D9 /* VoiceTurnBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9523CAD3450502FE203C1BBD /* VoiceTurnBuffer.swift */; };
 		9C57F9AFA362287C2B93142E /* IBMPlexMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0EAD8A3C72D3899AD5CD2AA8 /* IBMPlexMono-Regular.ttf */; };
 		A3D88EE98BFEE3386A2C66DF /* BlueyAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1510156B478E99D7C4446DCA /* BlueyAppView.swift */; };
 		B7F0853D97ECC4C28D0F6986 /* FocusViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABAEED7339E96003AE49BEC7 /* FocusViews.swift */; };
@@ -49,6 +50,7 @@
 		7ED2232FD362786D7A5D38B8 /* ChunkRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChunkRecorder.swift; sourceTree = "<group>"; };
 		83073BF3A1F734ADC97138DF /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		8E88A21B39D4CF71F73A5737 /* QRPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRPairingView.swift; sourceTree = "<group>"; };
+		9523CAD3450502FE203C1BBD /* VoiceTurnBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceTurnBuffer.swift; sourceTree = "<group>"; };
 		AA3AAA80221D679C8EAAE925 /* FaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceView.swift; sourceTree = "<group>"; };
 		AB333D12D3F4C506B3E49505 /* IBMPlexSans.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = IBMPlexSans.ttf; sourceTree = "<group>"; };
 		ABAEED7339E96003AE49BEC7 /* FocusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusViews.swift; sourceTree = "<group>"; };
@@ -118,6 +120,7 @@
 				4F71F206238433A6F710528B /* GooglyLink.swift */,
 				4A31DC33ABF7869BDE4E0F6C /* Palette.swift */,
 				6C5BC31DC1FF4C0765EA0688 /* SecurePairing.swift */,
+				9523CAD3450502FE203C1BBD /* VoiceTurnBuffer.swift */,
 				2F574059BA9C302B222352AA /* Fonts */,
 			);
 			path = Shared;
@@ -216,6 +219,7 @@
 				F5C101DF403B8B41F401C234 /* SecurePairing.swift in Sources */,
 				6FBD9F2B49D3FD5A78CC4EF1 /* SessionStore.swift in Sources */,
 				FF7676A8F229F874417F4451 /* SoundButton.swift in Sources */,
+				89CA80F59236155E52CDA9D9 /* VoiceTurnBuffer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

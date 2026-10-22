@@ -3,6 +3,20 @@ import CryptoKit
 @testable import GooglyShared
 
 final class FocusTests: XCTestCase {
+    func testVoiceRetainsBeginningUntilConnectedAndRejectsEmptyTurns() {
+        var turn = VoiceTurnBuffer()
+        XCTAssertFalse(turn.canCommit)
+        let beginning = Data(repeating: 1, count: 4800)
+        XCTAssertNil(turn.append(beginning, ready: false))
+        XCTAssertTrue(turn.canCommit)
+        XCTAssertEqual(turn.connected(), [beginning])
+        XCTAssertTrue(turn.connected().isEmpty)
+        let next = Data(repeating: 2, count: 4800)
+        XCTAssertEqual(turn.append(next, ready: true), next)
+        turn.begin(); XCTAssertFalse(turn.canCommit)
+        XCTAssertNil(turn.append(Data(repeating: 0, count: 960_001), ready: false))
+        XCTAssertTrue(turn.overflowed); XCTAssertFalse(turn.canCommit)
+    }
     func off(_ elapsed: Double, _ strength: Double = 0.99) -> FocusCheck {
         FocusCheck(elapsed: elapsed, activity: .offTask, probability: strength, confidence: strength)
     }

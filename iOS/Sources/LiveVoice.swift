@@ -2,13 +2,26 @@ import AVFoundation
 import Foundation
 
 /// A live session with OpenAI's Realtime API, running on the phone. Once he's awake the mic is on the whole
-/// time, so everything you say becomes context, but he stays quiet until you hold the screen and ask.
+/// time; only speech captured while holding is sent. Prior held turns remain conversation context.
 /// He never talks out loud: replies are text (speech bubbles on the Mac) with a little cartoon chirp here.
 /// Tools (look at the screen, point) run on the Mac.
 final class LiveVoice: NSObject, ObservableObject {
     enum State: Equatable { case asleep, waking, listening, asking, thinking, speaking }
 
     @Published private(set) var state: State = .asleep
+    @Published private(set) var feedback = ""
+    @Published private(set) var inputLevel = 0.0
+    private var socketReady = false
+    private var turnAudio = VoiceTurnBuffer()
+    private var waitingForCommit = false
+    private var awaitingTranscript: String?
+    private var voiceRequest = UUID()
+    private var microphoneBuffers = 0
+    private var sentAudioBytes = 0
+    private var lastDiagnostic = Date.distantPast
+    private var lastErrorCode = ""
+    private var lastEvent = ""
+    private var toolNames: [String] = []
 
     static let model = "gpt-realtime-2.1"
 
@@ -75,6 +88,7 @@ final class LiveVoice: NSObject, ObservableObject {
         guard new != state else { return }
         state = new
         onStateChange?(new)
+        writeDiagnostics()
     }
 
     // MARK: Wake and sleep
@@ -95,11 +109,17 @@ final class LiveVoice: NSObject, ObservableObject {
                     self.setState(.asleep)
                     return
                 }
-                guard let requestToken = self.requestToken else { self.wantAwake = false; self.setState(.asleep); return }
+                guard self.wantAwake, self.state == .waking else { return }
+                do { try self.startAudio() }
+                catch {
+                    self.feedback = "Couldn't start the microphone. Check iPhone Settings > Bluey > Microphone."
+                    self.onCaption?(self.feedback, true); self.sleep(); return
+                }
+                guard let requestToken = self.requestToken else { self.sleep(); return }
                 requestToken { token in
                     DispatchQueue.main.async {
                         guard self.state == .waking else { return }
-                        guard let token else { self.onCaption?("Voice could not start. Check the Mac connection and OpenAI key.", true); self.wantAwake = false; self.setState(.asleep); return }
+                        guard let token else { self.feedback = "Voice could not connect. Check the Mac and OpenAI key."; self.onCaption?(self.feedback, true); self.sleep(); return }
                         self.connect(token)
                     }
                 }
@@ -117,6 +137,11 @@ final class LiveVoice: NSObject, ObservableObject {
         awaitingQuestion = false
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        socketReady = false
+        waitingForCommit = false
+        awaitingTranscript = nil
+        voiceRequest = UUID()
+        turnAudio.begin()
         stopAudio()
         transcript = ""
         pendingBuffers = 0
@@ -189,6 +214,13 @@ final class LiveVoice: NSObject, ObservableObject {
     /// You pressed and held the screen: what you say now is the question.
     func beginAsk() {
         holding = true
+        turnAudio.begin()
+        awaitingTranscript = nil
+        waitingForCommit = false
+        voiceRequest = UUID()
+        feedback = "Listening… let go when you're done."
+        if responseActive { send(["type": "response.cancel"]) }
+        if socketReady { send(["type": "input_audio_buffer.clear"]) }
         onCaption?("", false)  // clears his last bubble
         if state == .asleep { wake(); return }
         guard socket != nil else { return }
@@ -199,17 +231,31 @@ final class LiveVoice: NSObject, ObservableObject {
     func endAsk() {
         guard holding else { return }
         holding = false
-        guard socket != nil, state != .waking else { askWhenReady = true; return }
+        guard socketReady else { askWhenReady = true; return }
         ask()
     }
 
     private func ask() {
         askWhenReady = false
+        guard turnAudio.canCommit else {
+            feedback = turnAudio.overflowed ? "Voice took too long to connect. Hold Bluey and try again." : "I didn't catch that. Hold Bluey while you say the task."
+            onCaption?(feedback, true)
+            setState(.listening)
+            return
+        }
         setState(.thinking)
+        feedback = "Got your audio. Working out the task…"
         awaitingQuestion = true
-        // Close off what you just said (it may still be mid-sentence) and ask for a reply.
+        waitingForCommit = true
         send(["type": "input_audio_buffer.commit"])
-        send(["type": "response.create"])
+        let request = voiceRequest
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.voiceRequest == request, self.waitingForCommit || self.awaitingTranscript != nil else { return }
+            self.waitingForCommit = false; self.awaitingTranscript = nil
+            self.feedback = "I couldn't transcribe that. Hold Bluey and try the task again."
+            self.onCaption?(self.feedback, true); self.setState(.listening)
+        }
+        // Only request a response after this committed turn has a non-empty transcription.
     }
 
     // MARK: Connection
@@ -221,36 +267,14 @@ final class LiveVoice: NSObject, ObservableObject {
         self.socket = socket
         socket.resume()
         receive(on: socket)
-        if reconnecting {
-            // Same session, new connection: the mic and recording never stopped. Remind him what was said.
-            reconnecting = false
-            if let context = resumeContext?(), !context.isEmpty {
-                send(["type": "conversation.item.create",
-                      "item": ["type": "message", "role": "user",
-                               "content": [["type": "input_text", "text": "(Context: what I said earlier in this session, from my notes. Don't reply to this.)\n" + context]]]])
-            }
-            if askWhenReady { ask() } else { setState(holding ? .asking : .listening) }
-            return
-        }
-        do {
-            try startAudio()
-        } catch {
-            onCaption?("I couldn't start the microphone: \(error.localizedDescription)", true)
-            sleep()
-            return
-        }
-        onSessionStart?()
-        chirp(syllables: 2)
-        if askWhenReady {
-            ask()
-        } else {
-            setState(holding ? .asking : .listening)
-        }
+        // The microphone is already running. Keep the held words locally until session.created.
     }
 
     /// The connection dropped mid-session: get a new key and carry on, keeping the mic and recording running.
     private func reconnect(attempt: Int = 0) {
         socket = nil
+        socketReady = false
+        feedback = "Voice reconnecting…"
         responseActive = false
         toolsRunning = 0
         guard wantAwake, let requestToken else { return }
@@ -304,7 +328,22 @@ final class LiveVoice: NSObject, ObservableObject {
 
     private func handle(_ event: [String: Any]) {
         guard let type = event["type"] as? String else { return }
+        lastEvent = type
         switch type {
+        case "session.created":
+            socketReady = true
+            if reconnecting {
+                reconnecting = false
+                if let context = resumeContext?(), !context.isEmpty {
+                    send(["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                        "content": [["type": "input_text", "text": "Earlier conversation context (do not answer): " + context]]]])
+                }
+            } else { onSessionStart?(); chirp(syllables: 2) }
+            send(["type": "input_audio_buffer.clear"])
+            for data in turnAudio.connected() { appendAudio(data) }
+            if askWhenReady { ask() } else { setState(holding ? .asking : .listening) }
+            writeDiagnostics()
+
         case "response.created":
             responseActive = true
             transcript = ""
@@ -327,12 +366,37 @@ final class LiveVoice: NSObject, ObservableObject {
                 if asked { askedItems.insert(item) }
                 if awaitingQuestion, !holding { awaitingQuestion = false }
                 onUserTurn?(item, asked)
+                if waitingForCommit {
+                    waitingForCommit = false
+                    awaitingTranscript = item
+                }
             }
 
         case "conversation.item.input_audio_transcription.completed":
             if let item = event["item_id"] as? String, let text = event["transcript"] as? String {
                 onUserWords?(item, text, askedItems.contains(item))
+                feedback = "Heard: " + text
+                if awaitingTranscript == item {
+                    awaitingTranscript = nil
+                    let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if words.isEmpty {
+                        feedback = "I didn't hear a task. Hold Bluey while you say it."
+                        onCaption?(feedback, true); setState(.listening)
+                    } else {
+                        send(["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                            "content": [["type": "input_text", "text": words]]]])
+                        send(["type": "conversation.item.create", "item": ["type": "message", "role": "system",
+                            "content": [["type": "input_text", "text": "The preceding words were explicitly spoken while holding Bluey. When they describe work, call focus_start with task and optional minutes (default 30). Never merely say you're ready. For questions use the appropriate tool. Keep existing safety/personality instructions."]]]])
+                        send(["type": "response.create", "response": ["output_modalities": ["text"]]])
+                    }
+                }
+                writeDiagnostics()
             }
+
+        case "conversation.item.input_audio_transcription.failed":
+            awaitingTranscript = nil; waitingForCommit = false
+            feedback = "Voice transcription failed. Check the OpenAI connection and try again."
+            onCaption?(feedback, true); setState(.listening); writeDiagnostics()
 
         case "response.done":
             responseActive = false
@@ -350,9 +414,17 @@ final class LiveVoice: NSObject, ObservableObject {
 
         case "error":
             let error = event["error"] as? [String: Any]
-            if (error?["code"] as? String) == "input_audio_buffer_commit_empty" { awaitingQuestion = false }
+            lastErrorCode = error?["code"] as? String ?? "unknown"
+            if lastErrorCode == "input_audio_buffer_commit_empty" {
+                awaitingQuestion = false; waitingForCommit = false
+                feedback = "No audio reached the voice session. Hold Bluey and try again."
+                setState(.listening)
+            }
             let message = (error?["message"] as? String) ?? "Something went wrong."
             NSLog("Googly realtime error: \(message)")
+            if lastErrorCode != "input_audio_buffer_commit_empty" { feedback = "Voice error: " + String(message.prefix(180)) }
+            onCaption?(feedback, true)
+            writeDiagnostics()
 
         default:
             break
@@ -365,12 +437,14 @@ final class LiveVoice: NSObject, ObservableObject {
         var images: [String] = []
         for call in calls {
             let name = call["name"] as? String ?? ""
+            toolNames.append(name); toolNames = Array(toolNames.suffix(8)); writeDiagnostics()
             let callID = call["call_id"] as? String ?? ""
             let arguments = call["arguments"] as? String ?? "{}"
             if name == "go_to_sleep" { sleepAfterReply = true }
             let finish: (String, String?) -> Void = { [weak self] output, image in
                 DispatchQueue.main.async {
                     guard let self, self.socket != nil else { return }
+                    if name.hasPrefix("focus_") { self.feedback = output }
                     if name == "web_research", let range = output.range(of: "\n---REPORT---\n") {
                         self.onReport?(String(output[range.upperBound...]))
                     }
@@ -407,6 +481,7 @@ final class LiveVoice: NSObject, ObservableObject {
     // MARK: Audio
 
     private func startAudio() throws {
+        if engine.isRunning { engine.stop() }
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
@@ -456,6 +531,7 @@ final class LiveVoice: NSObject, ObservableObject {
     }
 
     private func sendMic(_ buffer: AVAudioPCMBuffer) {
+        if converter?.inputFormat != buffer.format { converter = AVAudioConverter(from: buffer.format, to: wireFormat) }
         guard let converter else { return }
         let ratio = wireFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 32)
@@ -470,9 +546,31 @@ final class LiveVoice: NSObject, ObservableObject {
         }
         guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData?[0] else { return }
         let data = Data(bytes: samples, count: Int(out.frameLength) * 2)
+        var sum = 0.0
+        for i in 0..<Int(out.frameLength) { let n = Double(samples[i]) / 32768; sum += n * n }
+        let rms = sqrt(sum / Double(max(1, out.frameLength)))
         DispatchQueue.main.async {
-            self.send(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()])
+            self.microphoneBuffers += 1
+            self.inputLevel = min(1, rms * 12)
+            if self.holding, let live = self.turnAudio.append(data, ready: self.socketReady) { self.appendAudio(live) }
+            if Date().timeIntervalSince(self.lastDiagnostic) >= 2 { self.writeDiagnostics() }
         }
+    }
+
+    private func appendAudio(_ data: Data) {
+        sentAudioBytes += data.count
+        send(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()])
+    }
+
+    private func writeDiagnostics() {
+        lastDiagnostic = Date()
+        let info: [String: Any] = ["state": String(describing: state), "socketReady": socketReady,
+            "microphoneBuffers": microphoneBuffers, "recordedTurnBytes": turnAudio.recordedBytes,
+            "sentAudioBytes": sentAudioBytes, "inputLevel": inputLevel,
+            "lastEvent": lastEvent, "lastErrorCode": lastErrorCode, "tools": toolNames,
+            "updatedAt": Date().timeIntervalSince1970]
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("bluey-voice-status.json")
+        if let data = try? JSONSerialization.data(withJSONObject: info) { try? data.write(to: url, options: .atomic) }
     }
 
     /// A tiny cartoon chirp: a few soft, round, bell-like notes from a happy pentatonic scale,

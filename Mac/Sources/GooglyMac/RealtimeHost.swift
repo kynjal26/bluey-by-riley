@@ -36,7 +36,7 @@ final class RealtimeHost {
         case "realtimeToken":
             Task { @MainActor in
                 do {
-                    let token = try await Self.mintToken(extra: self.focus?.current.map { "Current focus task: \($0.task). State: \($0.status.rawValue)." })
+                    let token = try await Self.mintToken(extra: self.focus?.current.flatMap { $0.status == .ended ? nil : "Current focus task: \($0.task). State: \($0.status.rawValue)." })
                     reply(Packet(command: "realtimeToken", callID: packet.callID, text: token))
                 } catch {
                     reply(Packet(command: "realtimeToken", callID: packet.callID, text: nil, image: nil))
@@ -672,10 +672,9 @@ final class RealtimeHost {
 
     /// How he uses his tools. Always included, whatever the personality says.
     static let toolGuide = """
-    How the conversation works: the user's microphone is on the whole time, so you overhear everything they say. \
-    Treat all of that as background context and stay silent. You only reply when the app asks you to respond, which \
-    happens when the user holds the phone screen to ask you something. Their most recent words are the question; \
-    use the earlier talk as context.
+    How the conversation works: the user holds the phone while speaking, then releases to send their request. \
+    Only the held speech is sent. Their latest held utterance is the request; prior turns are context. \
+    For a declared task, call focus_start immediately with task and duration. Never just say you are ready.
 
     Most important rule: when a request needs a tool, call the tool FIRST with no words before it (the one \
     exception is web_research, described below). Never write \
@@ -742,10 +741,8 @@ final class RealtimeHost {
             "audio": [
                 "input": [
                     "format": ["type": "audio/pcm", "rate": 24000],
-                    // Everything the user says is transcribed into the conversation as context, but he only
-                    // answers when the phone asks for a response (while you hold the screen).
-                    "turn_detection": ["type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300,
-                                       "silence_duration_ms": 500, "create_response": false, "interrupt_response": false],
+                    // Explicit push-to-talk: the phone commits actual captured audio before response.create.
+                    "turn_detection": NSNull(),
                     "noise_reduction": ["type": "near_field"],
                     "transcription": ["model": "gpt-4o-mini-transcribe"],
                 ],

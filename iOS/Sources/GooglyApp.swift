@@ -35,7 +35,7 @@ struct RootView: View {
 
             ModeIndicator(state: live.state)
 
-            FocusFaceHUD(focus: focus, link: link, open: { showFocus = true }, pair: { scanPairing = true })
+            FocusFaceHUD(focus: focus, link: link, live: live, open: { showFocus = true }, pair: { scanPairing = true })
             SoundButton(link: link, live: live)
 
             // Bluey's app: sessions, transcripts and settings.

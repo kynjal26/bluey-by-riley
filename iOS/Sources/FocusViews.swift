@@ -3,15 +3,22 @@ import SwiftUI
 struct FocusFaceHUD: View {
     @ObservedObject var focus: FocusClient
     @ObservedObject var link: MacLink
+    @ObservedObject var live: LiveVoice
     var open: () -> Void
     var pair: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(focus.current?.task ?? "What's the mission?")
+                    Text(focus.current.flatMap { $0.status == .ended ? nil : $0.task } ?? "What's the mission?")
                         .font(.fredoka(22)).lineLimit(2)
                     Text(status).font(.plexMono(10)).foregroundStyle(.white.opacity(0.65))
+                    if !live.feedback.isEmpty {
+                        Text(live.feedback).font(.plexSans(12)).lineLimit(2).foregroundStyle(.white.opacity(0.85))
+                    }
+                    if live.state == .asking {
+                        Capsule().fill(Color.white).frame(width: 20 + live.inputLevel * 100, height: 3)
+                    }
                 }.frame(maxWidth: 360, alignment: .leading)
                 Spacer()
             }
