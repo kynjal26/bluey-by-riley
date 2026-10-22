@@ -99,7 +99,7 @@ final class LiveVoice: NSObject, ObservableObject {
                 requestToken { token in
                     DispatchQueue.main.async {
                         guard self.state == .waking else { return }
-                        guard let token else { self.wantAwake = false; self.setState(.asleep); return }
+                        guard let token else { self.onCaption?("Voice could not start. Check the Mac connection and OpenAI key.", true); self.wantAwake = false; self.setState(.asleep); return }
                         self.connect(token)
                     }
                 }
@@ -178,6 +178,10 @@ final class LiveVoice: NSObject, ObservableObject {
             self.player.stop()
             self.engine.stop()
         }
+    }
+
+    func focusChirp() {
+        if state == .asleep { chirpAlone() } else { chirp(syllables: 3) }
     }
 
     // MARK: Hold to ask

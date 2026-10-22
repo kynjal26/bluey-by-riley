@@ -11,6 +11,7 @@ final class RealtimeHost {
     private let overlay: CursorOverlay
     private let codex: CodexController
     private let reports = ReportPanel()
+    var focus: FocusCompanion?
     private var snapshot: ScreenSnapshot?
     private var captionClear: DispatchWorkItem?
     private var readingDone: DispatchWorkItem?
@@ -35,7 +36,7 @@ final class RealtimeHost {
         case "realtimeToken":
             Task { @MainActor in
                 do {
-                    let token = try await Self.mintToken(extra: self.codex.pendingSummary)
+                    let token = try await Self.mintToken(extra: self.focus?.current.map { "Current focus task: \($0.task). State: \($0.status.rawValue)." })
                     reply(Packet(command: "realtimeToken", callID: packet.callID, text: token))
                 } catch {
                     reply(Packet(command: "realtimeToken", callID: packet.callID, text: nil, image: nil))
@@ -94,6 +95,17 @@ final class RealtimeHost {
         default:
             break
         }
+    }
+
+    func focusNudge(_ message: String, target: Target?) {
+        if let target {
+            point(to: CGPoint(x: target.rect.midX, y: target.rect.maxY + 3), showing: target.rect)
+        } else {
+            overlay.goHome()
+            overlay.view.speechTarget = nil
+        }
+        setSpeaking(true)
+        showReply(message)
     }
 
     /// Shows a finished line in his bubble, long enough to read, then tidies away.
@@ -187,6 +199,14 @@ final class RealtimeHost {
             tool("stop_pointing", "Bring your cursor back home when you're done pointing."),
             tool("go_to_sleep",
                  "Go back to quietly following the user's mouse with your eyes. Use when the user says bye, thanks that's all, or asks you to sleep."),
+        ]
+        list += [
+            tool("focus_start", "Start focusing on the user's spoken task. Default 30 minutes unless they specify a duration. Call immediately when they describe what they want to work on.",
+                 ["task": ["type": "string"], "minutes": ["type": "number"]], required: ["task"]),
+            tool("focus_pause", "Pause the focus timer and screenshot monitoring."),
+            tool("focus_resume", "Resume a paused focus session."),
+            tool("focus_end", "Finish focus and show the session timeline on the phone."),
+            tool("focus_status", "Read the focus task, countdown and monitoring status.")
         ]
         if CodexController.isInstalled { list += codexTools }
         guard Settings.shared.computerControl else { return list }
@@ -283,6 +303,14 @@ final class RealtimeHost {
                 reports.showError(error.localizedDescription)
                 return ("Research failed: \(error.localizedDescription). Tell the user in a few words.", nil)
             }
+        case "focus_start":
+            return (focus?.start(task: args["task"] as? String ?? "", minutes: args["minutes"] as? Double ?? 30) ?? "Focus is unavailable.", nil)
+        case "focus_pause": return (focus?.pause() ?? "Focus unavailable.", nil)
+        case "focus_resume": return (focus?.resume() ?? "Focus unavailable.", nil)
+        case "focus_end": return (focus?.end() ?? "Focus unavailable.", nil)
+        case "focus_status":
+            if let session = focus?.current { return ("Task: \(session.task). \(session.status.rawValue), \(FocusSession.clock(session.remaining)) remaining. \(session.detail)", nil) }
+            return ("No focus session yet.", nil)
         case "codex_start":
             return (codex.start(project: args["project"] as? String, prompt: args["prompt"] as? String ?? ""), nil)
         case "codex_follow_up":
@@ -554,7 +582,7 @@ final class RealtimeHost {
 
     private func startChoreography() {
         guard timer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.choreograph() }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in Task { @MainActor in self?.choreograph() } }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         choreograph()
@@ -691,7 +719,15 @@ final class RealtimeHost {
     """
 
     static var instructions: String {
-        personality + "\n\n" + toolGuide
+        personality + "\n\n" + """
+        Your main job is being a gentle focus friend. When the user holds the phone and describes a task,
+        use focus_start with that task and an optional duration (default 30 minutes), without confirmation.
+        Related learning and research count as work. If a focus session already exists, a new task needs the
+        user to end the current one first. Pause, resume and end only when asked using the focus tools.
+        One short witty British sentence, bubble and chirp only. Never scold. Focus monitoring itself
+        never clicks, closes apps, blocks sites or delegates work. Only use other tools on an explicit request.
+        Do not claim a session started if its tool reports a permission, connection or API error.
+        """ + "\n\n" + toolGuide
             + (CodexController.isInstalled ? "\n\n" + codexGuide : "")
             + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
     }
@@ -700,7 +736,7 @@ final class RealtimeHost {
         [
             "type": "realtime",
             "model": model,
-            "instructions": instructions + (extra.map { "\n\nRight now: \($0) Ask the user about it." } ?? ""),
+            "instructions": instructions + (extra.map { "\n\nRight now (state information only): \($0)" } ?? ""),
             // He never talks out loud: replies are text, shown as speech bubbles.
             "output_modalities": ["text"],
             "audio": [

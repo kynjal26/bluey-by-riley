@@ -14,11 +14,6 @@ final class Settings {
         set { defaults.set(newValue, forKey: "cursorSize"); onChange?() }
     }
 
-    var glow: Bool {
-        get { defaults.object(forKey: "glow") as? Bool ?? false }
-        set { defaults.set(newValue, forKey: "glow"); onChange?() }
-    }
-
     var showCursor: Bool {
         get { defaults.object(forKey: "showCursor") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "showCursor"); onChange?() }

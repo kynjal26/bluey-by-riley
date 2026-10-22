@@ -6,6 +6,9 @@ struct BlueyAppView: View {
     @ObservedObject var store: SessionStore
     @ObservedObject var live: LiveVoice
     @ObservedObject var link: MacLink
+    @ObservedObject var focus: FocusClient
+    var openFocus: () -> Void
+    var pairMac: () -> Void
     var onClose: () -> Void
     @State private var volume = 1.0
 
@@ -52,6 +55,9 @@ struct BlueyAppView: View {
                     }
                 }
 
+                Button("Focus sessions", action: openFocus).buttonStyle(.borderedProminent)
+                Button("Pair Mac (QR)", action: pairMac).buttonStyle(.bordered)
+
                 Button {
                     let starting = live.state == .asleep
                     live.toggle()
@@ -59,7 +65,7 @@ struct BlueyAppView: View {
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: live.state == .asleep ? "play.fill" : "stop.fill")
-                        Text(live.state == .asleep ? "Start session" : "End session")
+                        Text(live.state == .asleep ? "Start listening" : "Stop listening")
                     }
                     .font(.fredoka(18))
                     .foregroundStyle(.white)
@@ -78,7 +84,7 @@ struct BlueyAppView: View {
 
                 Text(live.state == .asleep
                      ? "He listens the whole session. Hold his face to ask something, let go and he answers."
-                     : "Session running. Hold his face to ask; everything you say is saved here.")
+                     : "Listening. Hold his face to ask; use Focus sessions for the task and timer.")
                     .font(.plexSans(12))
                     .foregroundStyle(Color(hex: Palette.inkSoft))
 
@@ -138,7 +144,7 @@ struct BlueyAppView: View {
     private var sessionList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Sessions")
+                Text("Voice history")
                     .font(.fredoka(24))
                     .foregroundStyle(.white)
                 Spacer()

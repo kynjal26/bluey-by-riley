@@ -1,0 +1,232 @@
+import AppKit
+import GooglyShared
+
+/// The Mac owns the clock, check cadence and cancellation. The phone only sends commands
+/// and renders authoritative snapshots. Generation guards discard every late callback.
+@MainActor
+final class FocusCompanion {
+    private(set) var current: FocusSession?
+    private(set) var history: [FocusSession] = []
+    var onChange: ((FocusSync) -> Void)?
+    var onNudge: ((String, Target?) -> Void)?
+    var connected = false
+    private var lastPing = -Double.infinity
+    private var lastTick = ProcessInfo.processInfo.systemUptime
+    private var lastCheck: Double = 0
+    private var policy = FocusNudgePolicy()
+    private var timer: Timer?
+    private var work: Task<Void, Never>?
+    private var generation = UUID()
+    private var revision = 0
+    private let countdown = FocusCountdown()
+    private var observers: [NSObjectProtocol] = []
+    private let file: URL
+    private let now: () -> Double
+    private let permission: () -> Bool
+    private let hasKey: () -> Bool
+    private let capture: () async throws -> ScreenSnapshot
+    private let classify: (ScreenSnapshot, FocusSession, Double) async throws -> FocusDecision
+    private let screenUnlocked: () -> Bool
+    private let showsCountdown: Bool
+
+    init(now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+         permission: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
+         hasKey: @escaping () -> Bool = { Keychain.get(.openai) != nil },
+         screenUnlocked: @escaping () -> Bool = {
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            return session?["CGSSessionScreenIsLocked"] as? Bool != true && session?["kCGSessionOnConsoleKey"] as? Bool != false
+         },
+         capture: @escaping () async throws -> ScreenSnapshot = { try await ScreenReader.snapshot() },
+         classify: @escaping (ScreenSnapshot, FocusSession, Double) async throws -> FocusDecision = { try await FocusAPI.classify($0, session: $1, idle: $2) },
+         showsCountdown: Bool = true,
+         historyFile: URL? = nil) {
+        self.now = now; self.permission = permission; self.hasKey = hasKey
+        self.capture = capture; self.classify = classify; self.screenUnlocked = screenUnlocked
+        self.showsCountdown = showsCountdown; self.lastTick = now()
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Googly")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        file = historyFile ?? dir.appendingPathComponent("focus-history.json")
+        history = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([FocusSession].self, from: $0) } ?? []
+    }
+    func startService() {
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        for name in ["com.apple.screenIsLocked"] {
+            observers.append(DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.pause("Mac locked. Resume when you're ready.") }
+            })
+        }
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.pause("Mac sleeping or locked. Resume when you're ready.") }
+            })
+        }
+    }
+    func shutdown() { pause("Bluey closed"); timer?.invalidate(); cancel() }
+    func heartbeat() { lastPing = now(); connected = true; if !monitoring { publish() } }
+    func disconnected() { connected = false; pause("Phone disconnected. Reconnect, then resume.") }
+    func sync() { publish() }
+    var monitoring: Bool { current?.status == .running }
+    var hasSession: Bool { current != nil && current?.status != .ended }
+
+    @discardableResult func start(task: String, minutes: Double = 30) -> String {
+        let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.isEmpty else { return "Tell me the task first." }
+        guard minutes.isFinite else { return "Use a duration between 1 and 240 minutes." }
+        guard !hasSession else { return "There's already a focus session. End it before starting another." }
+        guard freshConnection else { return "Connect the paired phone first." }
+        guard permission() else { return "Screen Recording is off. Enable Bluey in System Settings > Privacy & Security > Screen Recording, then reopen Bluey." }
+        guard hasKey() else { return "Add your OpenAI key in Bluey's Mac menu." }
+        cancel(); policy = FocusNudgePolicy()
+        current = FocusSession(task: task, duration: min(240, max(1, minutes)) * 60)
+        lastTick = now(); lastCheck = 0
+        publish(); persist()
+        return "Focus started: \(task), \(Int(min(240, max(1, minutes)))) minutes."
+    }
+    @discardableResult func pause(_ reason: String = "Paused") -> String {
+        guard current?.status == .running else { return "Focus is already paused or ended." }
+        advanceClock(); current?.pause(reason); cancel(); policy.reset(); publish(); persist()
+        return "Focus paused."
+    }
+    @discardableResult func resume() -> String {
+        guard current?.status == .paused else { return "There's no paused focus session." }
+        guard freshConnection else { return "Reconnect the paired phone before resuming." }
+        guard permission() else { return "Screen Recording permission is missing. Enable it in System Settings, then reopen Bluey." }
+        current?.resume(); policy.reset(); cancel()
+        lastTick = now(); lastCheck = current?.elapsed ?? 0
+        publish(); persist(); return "Focus resumed."
+    }
+    @discardableResult func end() -> String {
+        guard hasSession else { return "There's no running focus session." }
+        advanceClock(); current?.end(); finish(); return "Focus finished. Your timeline is on the phone."
+    }
+    private var freshConnection: Bool { connected && now() - lastPing < 5 }
+    private var unlocked: Bool { screenUnlocked() }
+    private var allowed: Bool { monitoring && freshConnection && unlocked && permission() }
+    private func cancel() { generation = UUID(); work?.cancel(); work = nil }
+    private func advanceClock() {
+        let now = now()
+        let delta = now - lastTick; lastTick = now
+        // A suspended run loop is not evidence of active focus time.
+        if delta <= 3 { current?.advance(delta) }
+    }
+    func tick() {
+        guard monitoring else { return }
+        guard freshConnection else { pause("Phone disconnected. Reconnect, then resume."); return }
+        guard unlocked else { pause("Mac locked. Resume when ready."); return }
+        guard permission() else { pause("Screen Recording permission lost. Enable it, then reopen Bluey."); return }
+        if now() - lastTick > 3 { pause("Mac was inactive. Resume when ready."); return }
+        advanceClock()
+        if current?.status == .ended { finish(); return }
+        publish()
+        if let session = current, session.elapsed - lastCheck >= 30, work == nil {
+            lastCheck = session.elapsed
+            check(session: session)
+        }
+    }
+    private func check(session: FocusSession) {
+        let token = generation
+        let began = now()
+        work = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.generation == token { self.work = nil } }
+            do {
+                guard self.allowed else { return }
+                let screen = try await self.capture()
+                guard self.allowed, self.generation == token, !Task.isCancelled else { return }
+                let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max) ?? .null)
+                let answer = try await self.classify(screen, session, idle.isFinite ? idle : 0)
+                guard self.allowed, self.generation == token, !Task.isCancelled else { return }
+                let age = now() - began
+                var check = FocusCheck(elapsed: session.elapsed, activity: age <= 20 ? answer.activity : .unavailable,
+                                       probability: answer.probability, confidence: answer.confidence)
+                let shouldNudge = self.policy.observe(check, age: age)
+                self.current?.detail = age > 20 ? "Last check was stale; skipped" : answer.activity == .uncertain ? "Not enough context to judge" : "Last check: \(answer.activity == .onTask ? "on task" : "possible detour")"
+                self.current?.checks.append(check)
+                self.publish(); self.persist()
+                if shouldNudge {
+                    // Fresh evidence, separate API. Its output can only show a bubble or point.
+                    guard self.allowed else { return }
+                    let fresh = try await ScreenReader.snapshot()
+                    let capturedAt = now()
+                    let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    var nudge = FocusAPI.Nudge(message: "Are you sure you're on task right now?", target: nil)
+                    do { nudge = try await FocusAPI.nudge(fresh, task: session.task) }
+                    catch { self.current?.detail = "Nudge wording unavailable; using a gentle reminder" }
+                    guard self.allowed, self.generation == token, !Task.isCancelled else { return }
+                    var target: Target?
+                    if let candidate = nudge.target, now() - capturedAt < 15,
+                       app == NSWorkspace.shared.frontmostApplication?.processIdentifier {
+                        // Re-read locally to reject a stale target after a tab, scroll or layout change.
+                        if let verify = try? await ScreenReader.snapshot() {
+                            target = verify.lines.map(\.line).first { $0.text == candidate.text &&
+                                abs($0.rect.midX - candidate.rect.midX) < 10 && abs($0.rect.midY - candidate.rect.midY) < 10 }
+                        }
+                    }
+                    guard self.allowed, self.generation == token, !Task.isCancelled else { return }
+                    self.onNudge?(nudge.message, target)
+                    check.nudged = true
+                    if let index = self.current?.checks.firstIndex(where: { $0.id == check.id }) { self.current?.checks[index] = check }
+                    self.publish(); self.persist()
+                }
+            } catch {
+                guard self.allowed, self.generation == token, !Task.isCancelled else { return }
+                self.policy.reset()
+                self.current?.checks.append(FocusCheck(elapsed: session.elapsed, activity: .unavailable))
+                self.current?.detail = "Check unavailable: \(error.localizedDescription.prefix(180))"
+                self.publish(); self.persist()
+                // Authentication/permission issues need intervention, not repeated paid calls.
+                if (error as? FocusAPI.Failure) != nil { self.pause(self.current?.detail ?? "OpenAI unavailable") }
+            }
+        }
+    }
+    private func finish() {
+        cancel(); policy.reset()
+        if let current {
+            history.removeAll { $0.id == current.id }; history.insert(current, at: 0)
+            history = Array(history.prefix(30))
+        }
+        publish(); persist()
+    }
+    private func persist() {
+        var saved = history
+        if var session = current, session.status != .ended {
+            session.status = .ended; session.detail = "App closed or restarted"
+            saved.removeAll { $0.id == session.id }; saved.insert(session, at: 0)
+        }
+        if let data = try? JSONEncoder().encode(Array(saved.prefix(30))) {
+            try? data.write(to: file, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        }
+    }
+    private func publish() {
+        revision += 1
+        if showsCountdown { countdown.update(current) }
+        onChange?(FocusSync(current: current, history: history, revision: revision))
+    }
+}
+
+@MainActor
+private final class FocusCountdown {
+    private var window: NSPanel?
+    private let label = NSTextField(labelWithString: "")
+    func update(_ session: FocusSession?) {
+        guard let session, session.status != .ended else { window?.orderOut(nil); return }
+        if window == nil, let screen = NSScreen.screens.first {
+            let panel = NSPanel(contentRect: CGRect(x: screen.visibleFrame.maxX - 180, y: screen.visibleFrame.minY + 16, width: 160, height: 30),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+            panel.level = .floating; panel.ignoresMouseEvents = true
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            label.frame = CGRect(x: 0, y: 0, width: 160, height: 28)
+            label.font = .monospacedDigitSystemFont(ofSize: 17, weight: .medium)
+            label.textColor = .white; label.alignment = .right
+            panel.contentView?.addSubview(label); window = panel
+        }
+        label.stringValue = (session.status == .paused ? "Ⅱ " : "") + FocusSession.clock(session.remaining)
+        window?.orderFrontRegardless()
+    }
+}

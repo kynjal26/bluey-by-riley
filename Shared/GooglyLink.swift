@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CryptoKit
 
 /// Everything the Mac and the iPhone agree on: the Bonjour service name,
 /// what a "face update" looks like, and how lines of JSON travel over TCP.
@@ -84,51 +85,91 @@ public final class LineConnection {
     public let connection: NWConnection
     public var onPacket: ((Packet) -> Void)?
     public var onState: ((NWConnection.State) -> Void)?
-
+    public var onAuthenticated: (() -> Void)?
     private var buffer = Data()
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let secret: Data
+    private let server: Bool
+    private var challenge: Data?
+    private var channel: SecureChannel?
+    private var authenticated = false
 
-    public init(_ connection: NWConnection) {
-        self.connection = connection
+    public init(_ connection: NWConnection, secret: Data, server: Bool) {
+        self.connection = connection; self.secret = secret; self.server = server
     }
-
     public func start() {
         connection.stateUpdateHandler = { [weak self] state in
-            self?.onState?(state)
+            guard let self else { return }
+            if case .ready = state, self.server {
+                let challenge = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+                self.challenge = challenge
+                self.handshake(["challenge": challenge.base64EncodedString()])
+            }
+            self.onState?(state)
         }
         connection.start(queue: .main)
         receive()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            if self?.authenticated == false { self?.cancel() }
+        }
     }
-
     public func send(_ packet: Packet) {
-        guard var data = try? encoder.encode(packet) else { return }
-        data.append(0x0A)
-        connection.send(content: data, completion: .contentProcessed { _ in })
+        guard authenticated, var channel else { return }
+        do {
+            let data = try channel.seal(packet)
+            self.channel = channel
+            write(data)
+        } catch { cancel() }
     }
-
-    public func cancel() {
-        connection.cancel()
+    public func cancel() { connection.cancel() }
+    private func write(_ data: Data) {
+        var line = data; line.append(0x0A)
+        connection.send(content: line, completion: .contentProcessed { [weak self] error in
+            if error != nil { self?.cancel() }
+        })
     }
-
+    private func handshake(_ fields: [String: String]) {
+        if let data = try? JSONSerialization.data(withJSONObject: fields) { write(data) }
+    }
+    private func accept(_ line: Data) {
+        if var channel {
+            do {
+                let packet = try channel.open(line)
+                self.channel = channel
+                if !authenticated {
+                    guard !server, packet.command == "paired" else { cancel(); return }
+                    authenticated = true
+                    onAuthenticated?()
+                } else { onPacket?(packet) }
+            } catch { cancel() }
+            return
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: line) as? [String: String] else { cancel(); return }
+        if server {
+            guard let challenge, let text = json["proof"], let proof = Data(base64Encoded: text),
+                  SecureChannel.verifies(proof, secret: secret, challenge: challenge) else { cancel(); return }
+            channel = SecureChannel(secret: secret, challenge: challenge, server: true)
+            authenticated = true
+            send(Packet(command: "paired"))
+            onAuthenticated?()
+        } else {
+            guard let text = json["challenge"], let challenge = Data(base64Encoded: text), challenge.count == 32 else { cancel(); return }
+            channel = SecureChannel(secret: secret, challenge: challenge, server: false)
+            handshake(["proof": SecureChannel.proof(secret: secret, challenge: challenge).base64EncodedString()])
+        }
+    }
     private func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { [weak self] data, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { [weak self] data, _, complete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
                 self.buffer.append(data)
+                guard self.buffer.count <= 16 * 1024 * 1024 else { self.cancel(); return }
                 while let newline = self.buffer.firstIndex(of: 0x0A) {
-                    let line = self.buffer[self.buffer.startIndex..<newline]
+                    let line = Data(self.buffer[..<newline])
                     self.buffer.removeSubrange(self.buffer.startIndex...newline)
-                    if let packet = try? self.decoder.decode(Packet.self, from: line) {
-                        self.onPacket?(packet)
-                    }
+                    self.accept(line)
                 }
             }
-            if isComplete || error != nil {
-                self.connection.cancel()
-            } else {
-                self.receive()
-            }
+            if complete || error != nil { self.cancel() } else { self.receive() }
         }
     }
 }

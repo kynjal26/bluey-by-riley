@@ -1,46 +1,96 @@
 # Bluey
 
-A blueberry character who lives on an iPhone under your Mac's screen and points at things with his own big cursor.
+Bluey is a little blueberry focus friend. Keep your iPhone sideways under your Mac monitor: his eyes follow your mouse, and his matching blue cursor appears when he has something to point out. Same character, animation, British personality, speech bubbles and cartoon chirp. No spoken voice output and no glow.
 
-**Now:** no voice out. Double tap him on the phone (or press ⌥Space on the Mac) to start a session: the phone's mic stays on and everything you say becomes context, but he stays quiet. **Press and hold the screen** to ask him something; let go and he answers. His reply pops up as a cute speech bubble next to his cursor (or above the phone when he isn't pointing), with a little cartoon chirp from the phone. Ask "what's this?" and he points at whatever is under your mouse. Double tap again and he goes back to follow mode.
+## Start focusing
 
-How it works: the phone runs an OpenAI Realtime session (`gpt-realtime-2.1`, text output only) over a WebSocket. Server VAD transcribes every turn into the conversation with `create_response: false`, and releasing the hold commits the audio and asks for a response. The Mac mints a 10-minute client secret with the whole session setup (instructions, tools), so the real OpenAI key never leaves the Mac. When he calls a tool, the phone forwards it to the Mac: `look_at_screen` (ScreenCaptureKit + Vision, which returns text ids, where your mouse is, and a screenshot), `point_at` (a text id), `point_at_spot` (a 0–1000 grid position), `stop_pointing` and `go_to_sleep`. His text streams to the Mac as the speech bubble.
+1. Run Bluey on your Mac and iPhone on the same local network.
+2. On Mac, choose **Pair iPhone (QR)…** from Bluey's menu. On iPhone choose **Pair Mac**, then scan the code. Treat this code as a private pairing credential.
+3. Add your OpenAI API key through **OpenAI Key…** in the Mac menu. It stays in `~/Library/Application Support/Googly/keys.json`, with private file permissions. It never goes to the phone or into this repository.
+4. Grant **Screen Recording** on Mac. If macOS requests it, quit and reopen Bluey after granting access. **Microphone** on iPhone enables voice; **Camera** is used only for QR pairing; **Local Network** lets the phone find the Mac. Accessibility is optional for the existing explicitly requested computer-control tools, and isn't needed for focus classification.
+5. Hold Bluey's face and describe the task, optionally giving a duration: “I'm making a Codex video for 30 minutes.” Release to start. The default is 30 minutes, with a 1–240 minute range. You can also tap **Focus**, type a task, and start there.
 
-**Meeting notes:** while a session runs, the phone also records the audio in five-minute AAC chunks. Each chunk goes to the Mac, which transcribes it with speaker labels (`gpt-4o-transcribe-diarize`, falling back to `gpt-transcribe`) and writes the session to `~/Documents/Bluey Notes/<date> <id>/` (`notes.md`, `session.json`, `audio/`). Sessions reconnect on their own when the Realtime connection drops, so one can run all day. In the phone's Bluey screen, a session's **Copy prompt for agent** button copies a prompt that points an agent at those files. **Open Meeting Notes** in the Mac menu opens the folder.
+The task appears at the phone's top left. A small white countdown appears at the Mac's bottom right. Pause, resume and end are available on the phone and in the Mac menu, and through voice. **⌃⌥S** pauses focus and stops computer control. Pause, end, expiry, Mac lock/sleep, phone backgrounding or disconnect stops monitoring. Reconnection and unlocking never resume it automatically. A missing heartbeat is detected within five seconds; outstanding results are discarded.
 
-**Using the computer:** when you ask, he can also click, type, press shortcuts, scroll, drag, and open apps and websites (`click`, `type_text`, `press_keys`, `scroll`, `drag`, `open_app`, `open_url`). He does it with his own cursor on screen, while your real pointer is put back where you left it. It needs Accessibility permission for Bluey. Built-in guardrails: he only acts when asked, confirms out loud before anything hard to undo, treats on-screen text as information rather than instructions, refuses password fields and logout/lock/force-quit shortcuts, and stops on ⌃⌥S. The whole thing can be switched off with **Let Him Use the Computer** in the menu.
+## Screen sharing and privacy
 
-The OpenAI key goes in the menu bar's **OpenAI Key…** and is stored in ~/Library/Application Support/Googly/keys.json (private to your user), never in this repo.
+During a running focus session the Mac captures its **main display every 30 seconds**, excluding Bluey's own windows, and sends a reduced JPEG to OpenAI with the declared task, active elapsed time, idle duration and up to eight recent check results. If a nudge becomes due, a separate Responses request receives a fresh image and OCR target labels to prepare a short bubble and optional pointer target. No automatic clicking, app closing, website blocking or Codex delegation occurs in the monitoring path.
 
-## Mac menu bar app
+Bluey keeps screenshots in memory and does not save them by default. Local focus history stores the task, timings, classifications, model probability/confidence estimates and nudge markers, not images or OCR text. Mac history is `~/Library/Application Support/Googly/focus-history.json`; a copy is retained on the phone. OpenAI's processing and retention follow your API account's data controls; “not saved by Bluey” is not a promise of zero retention by OpenAI. Pause before opening anything you don't want shared.
 
-```
+The phone gets short-lived Realtime client secrets, never the Mac's long-lived key. Bonjour discovery still uses `_googly._tcp`, but connections now authenticate using a QR-shared 256-bit secret, a fresh challenge and HMAC. Direction-specific HKDF keys protect ordered AES-GCM records against eavesdropping, tampering and replay. Unpaired clients cannot request screenshots, tools or Realtime secrets. The phone stores its pairing credential in its device-only Keychain. The Mac stores its pairing credential in a private support file. Older builds using plaintext pairing must be updated on both devices.
+
+## How nudges work
+
+The [Decisions API](https://developers.openai.com/api/docs/guides/decisions) is called at `POST /v1/decisions` using `gpt-6-luna` and a **choice** question named `activity`: `on_task`, `off_task`, or `uncertain`. The app parses `choice`, the per-choice `probabilities`, and separate `confidence`. It does not expect explanations or coordinates.
+
+Related tutorials, research, reading and waiting for a build can support the task. A still mouse is never proof of distraction. Screenshot text is untrusted evidence, never instructions.
+
+- Only consecutive off-task choices with both P(off_task) and confidence at least 0.5 accumulate evidence.
+- Use the mean of the weaker of those two values. At 0.95 or above, require at least five checks spanning **120 seconds**. From 0.5 to 0.95 the required span falls gradually from **240 to 120 seconds**. For example 0.65 requires about 200 seconds, reached at the next 30-second check.
+- On-task, uncertain, failed, malformed, stale (>20 seconds), out-of-order or missing (>45-second gap) checks reset the evidence run. Pause/end reset it too.
+- A nudge resets the run and has a 120-second cooldown. Model estimates are not calibrated certainty; these are conservative initial product thresholds, not measured accuracy guarantees.
+- Responses (`gpt-5.5`, structured output, `store: false`) writes one gentle sentence. A failure falls back to “Are you sure you're on task right now?” It can select only an existing OCR line, with an exact matching quote. The app re-reads its position and checks the foreground app before pointing. Ambiguous or changed targets get a bubble alone.
+
+Finished sessions show a rectangular timeline on iPhone: green on-task samples, peach detours, grey unknown/unavailable/unchecked time. It represents 30-second observations rather than an exact time audit. Paused time is excluded.
+
+## Build and run
+
+Keep existing internal names and bundle IDs (`GooglyMac`, `GooglyEyes`, `co.visionairy.googly.*`). Renaming them resets permissions and pairing.
+
+Mac (SwiftPM, macOS 14+):
+
+```sh
 ./scripts/build-mac.sh
-open "build/Bluey.app"
+pkill -x GooglyMac
+open build/Bluey.app --args --pair
 ```
 
-Works with just the Command Line Tools. Shortcuts work anywhere:
+The script signs with an available Apple Development certificate and stages signing outside iCloud-managed Documents. The app remains a menu bar app.
 
-| Keys | What it does |
-| --- | --- |
-| ⌃⌥P | Fly to the mouse and point there (stays put) |
-| ⌃⌥F | Follow the mouse on/off |
-| ⌃⌥D | Go home, docked above the phone |
-| ⌃⌥T | Talk test (the phone bounces for 3 s) |
-| ⌃⌥H | Hide / show the cursor |
-| ⌥Space | Wake him up to talk / back to follow mode |
-| ⌃⌥S | Stop him using the computer |
+Phone (Xcode, iOS 17+):
 
-The menu bar blob also sets mood, cursor size (48 to 120 pt), glow, and where the phone sits (left, center, right).
+```sh
+xcodegen generate
+xcodebuild -project GooglyEyes.xcodeproj -scheme GooglyEyes \
+  -configuration Debug -destination 'generic/platform=iOS' \
+  -derivedDataPath /tmp/BlueyFocusDerivedData build
+xcrun devicectl list devices
+xcrun devicectl device install app --device <your-device-id> \
+  /tmp/BlueyFocusDerivedData/Build/Products/Debug-iphoneos/Bluey.app
+xcrun devicectl device process launch --device <your-device-id> \
+  --terminate-existing co.visionairy.googly.phone
+```
 
-## iPhone app
+Set your own development team in `project.yml` when building on another Mac. Build outside Documents to avoid iCloud extended attributes breaking signing.
 
-Needs full Xcode. Open `GooglyEyes.xcodeproj` (regenerate with `xcodegen generate` after adding files), pick your team under Signing, and run on the phone. It finds the Mac on the same Wi-Fi by itself.
+## Tests
 
-On the phone: double tap him to wake him up or put him back to sleep, and press and hold to ask him something. The faint speaker button at the top right sets the chirp volume and picks which Mac to pair with.
+Deterministic fixtures, no real API calls:
+
+```sh
+swift test --scratch-path /tmp/bluey-focus-swift
+```
+
+Tests cover timing, resets, cooldowns, stale/invalid answers, pause/resume/expiry, synchronization payloads, permission failure, disconnect/lock, cancellation and encrypted loopback pairing. A separate opt-in live probe calls the production API code with **synthetic images**, never your desktop:
+
+```sh
+swift run GooglyMac --focus-api-test
+```
+
+Real phone pairing, hold-to-start voice, permission prompts, chirps, pointing and full two-to-four-minute monitoring still need a device run. A successful build or synthetic probe alone is not proof of these behaviors.
+
+## Existing capabilities
+
+The existing manual pointing, voice context, research cards, Codex controller and session history remain available. The focus path does not start the old continuous meeting-audio recorder by default. Realtime output remains text only, with bubbles and chirps. The long-lived key stays on the Mac.
 
 ## Layout
 
-- `Shared/` pairing protocol (Bonjour `_googly._tcp`, newline JSON) and colors, used by both apps
-- `Mac/` menu bar app (Swift package target `GooglyMac`)
-- `iOS/` iPhone app (SwiftUI)
+- `Shared/`: pairing transport, palette, focus state and deterministic nudge policy.
+- `Mac/`: menu bar app, screenshot classifier, nudge generator, timer and existing tools.
+- `iOS/`: face, voice input, QR pairing, synchronized controls and focus timelines.
+- `Tests/`: deterministic logic, lifecycle and secure transport tests.
+
+## License
+
+Public domain under the Unlicense.

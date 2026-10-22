@@ -10,10 +10,10 @@ struct PairingView: View {
                 .frame(width: 220, height: 190)
 
             VStack(alignment: .leading, spacing: 14) {
-                Text("Wake me up from your Mac")
+                Text("Your little focus friend")
                     .font(.fredoka(32))
                     .foregroundStyle(Color(hex: 0xF4F1FA))
-                Text("Open Bluey in your Mac's menu bar. Keep both on the same Wi-Fi and I'll find it.")
+                Text("Open Bluey's Mac menu > Pair iPhone (QR). Scan once, then we'll reconnect securely on the same Wi-Fi.")
                     .font(.plexSans(16))
                     .foregroundStyle(Color(hex: Palette.inkSoft))
                     .frame(maxWidth: 380, alignment: .leading)
@@ -25,7 +25,7 @@ struct PairingView: View {
                 }
                 .padding(.top, 4)
                 Button(action: onPlay) {
-                    Text("Play without the Mac")
+                    Text("Pair Mac (scan QR)")
                         .font(.plexSans(15).weight(.semibold))
                         .foregroundStyle(Color(hex: 0xF4F1FA))
                         .padding(.horizontal, 18)

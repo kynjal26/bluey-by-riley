@@ -392,10 +392,9 @@ enum Teardrop {
     }
 }
 
-/// The cursor's body, drawn once (gradient, shine, white rim, soft glow) and then just moved around.
+/// The cursor's body, drawn once (gradient, shine, white rim) and then just moved around.
 final class TeardropLayer: CALayer {
     var side: CGFloat = 72
-    var glow = true
     var padding: CGFloat { side * 0.45 }
 
     override init() {
@@ -407,7 +406,6 @@ final class TeardropLayer: CALayer {
         super.init(layer: layer)
         if let other = layer as? TeardropLayer {
             side = other.side
-            glow = other.glow
         }
     }
 
@@ -422,11 +420,6 @@ final class TeardropLayer: CALayer {
         let path = Teardrop.path(size: s, tipRadius: 6 * k)
 
         ctx.saveGState()
-        if glow {
-            ctx.setShadow(offset: .zero, blur: 30 * k, color: NSColor(hex: Palette.berry2, alpha: 0.7).cgColor)
-        } else {
-            ctx.setShadow(offset: .zero, blur: 16 * k, color: NSColor(hex: Palette.berry4, alpha: 0.45).cgColor)
-        }
         ctx.addPath(path)
         ctx.setFillColor(NSColor.white.cgColor)
         ctx.fillPath()
@@ -476,7 +469,7 @@ final class CursorView: NSView {
     private var speechSize = CGSize.zero
     private var speechBorn = 0.0
 
-    private var builtArt: (side: CGFloat, glow: Bool, scale: CGFloat)?
+    private var builtArt: (side: CGFloat, scale: CGFloat)?
     private var scale: CGFloat = 2
     private var samples: [(point: CGPoint, time: Double)] = []
     private var lastTwinkle = 0.0
@@ -578,13 +571,11 @@ final class CursorView: NSView {
 
     private func buildArtIfNeeded() {
         let side = engine.size
-        let glow = Settings.shared.glow
-        if let art = builtArt, art.side == side, art.glow == glow, art.scale == scale { return }
-        builtArt = (side, glow, scale)
+        if let art = builtArt, art.side == side, art.scale == scale { return }
+        builtArt = (side, scale)
         let k = side / 96
         cursor.bounds = CGRect(x: 0, y: 0, width: side, height: side)
         body.side = side
-        body.glow = glow
         body.contentsScale = scale
         body.frame = CGRect(x: -body.padding, y: -body.padding, width: side + body.padding * 2, height: side + body.padding * 2)
         body.setNeedsDisplay()

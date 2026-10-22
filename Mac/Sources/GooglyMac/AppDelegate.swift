@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let server = PhoneServer()
     private var statusItem: NSStatusItem!
     private let codex = CodexController()
+    private let focus = FocusCompanion()
+    private let pairingPanel = PairingPanel()
     private lazy var host = RealtimeHost(overlay: overlay, codex: codex)
 
 
@@ -39,11 +41,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let question = ProcessInfo.processInfo.environment["GOOGLY_DEMO_RESEARCH"] {
             host.demoResearch(question, out: ProcessInfo.processInfo.environment["GOOGLY_DEMO_OUT"] ?? "/tmp/googly-report")
         }
+        host.focus = focus
+        focus.onChange = { [weak self] state in
+            guard let data = try? JSONEncoder().encode(state), let text = String(data: data, encoding: .utf8) else { return }
+            self?.server.broadcast(Packet(command: "focusState", text: text))
+        }
+        focus.onNudge = { [weak self] message, target in
+            guard let self else { return }
+            self.host.focusNudge(message, target: target)
+            self.server.broadcast(Packet(command: "focusChirp", text: message))
+        }
+        focus.startService()
+        if CommandLine.arguments.contains("--pair") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.pairingPanel.show() }
+        }
         server.onPhonesChanged = { [weak self] names in
             self?.refreshIcon()
+            if names.isEmpty { self?.focus.disconnected() }
             if names.isEmpty, self?.host.awake == true { self?.host.setAwake(false) }
         }
-        server.onRequest = { [weak self] packet, reply in self?.host.handle(packet, reply: reply) }
+        server.onRequest = { [weak self] packet, reply in
+            guard let self else { return }
+            if packet.command?.hasPrefix("focus") == true {
+                self.focus.heartbeat()
+                let args = packet.text.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? [:]
+                var result = ""
+                switch packet.command {
+                case "focusStart": result = self.focus.start(task: args["task"] as? String ?? "", minutes: args["minutes"] as? Double ?? 30)
+                case "focusPause": result = self.focus.pause()
+                case "focusResume": result = self.focus.resume()
+                case "focusEnd": result = self.focus.end()
+                case "focusSync": self.focus.sync()
+                default: break
+                }
+                reply(Packet(command: "focusReply", callID: packet.callID, text: result))
+            } else { self.host.handle(packet, reply: reply) }
+        }
         server.start()
         host.onChange = { [weak self] in self?.refreshIcon() }
         codex.onEvent = { [weak self] event in self?.codexEvent(event) }
@@ -66,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        focus.shutdown()
         codex.shutdown()
     }
 
@@ -165,7 +199,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     @objc private func toggleShow() { settings.showCursor.toggle() }
-    @objc private func toggleGlow() { settings.glow.toggle() }
+    @objc private func pairPhone() { pairingPanel.show() }
+    @objc private func pauseFocus() { focus.pause() }
+    @objc private func resumeFocus() { _ = focus.resume() }
+    @objc private func endFocus() { _ = focus.end() }
     @objc private func setTrail(_ item: NSMenuItem) {
         if let raw = item.representedObject as? String, let trail = PointerTrail(rawValue: raw) { settings.trail = trail }
     }
@@ -181,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// and keeps a small status file so it's easy to check what's allowed.
     private func checkPermissions() {
         guard ProcessInfo.processInfo.environment["GOOGLY_DEMO_OUT"] == nil else { return }
-        if settings.computerControl && !ComputerControl.isTrusted { ComputerControl.askForPermission() }
+        // Focus only needs Screen Recording. Accessibility is optional for explicit computer control.
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         let status = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Googly/status.txt")
@@ -197,12 +234,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func stopActions() {
+        focus.pause("Stopped with ⌃⌥S")
         host.stopActions()
     }
 
     @objc private func toggleComputerControl() {
         settings.computerControl.toggle()
-        if settings.computerControl && !ComputerControl.isTrusted { ComputerControl.askForPermission() }
+        // Focus only needs Screen Recording. Accessibility is optional for explicit computer control.
         restartIfAwake()  // his tools change with this switch
     }
 
@@ -276,6 +314,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        menu.addItem(item("Pair iPhone (QR)…", #selector(pairPhone)))
+        if let session = focus.current, session.status != .ended {
+            let title = NSMenuItem(title: "Focus: \(session.task) · \(FocusSession.clock(session.remaining))", action: nil, keyEquivalent: "")
+            title.isEnabled = false; menu.addItem(title)
+            menu.addItem(item(session.status == .running ? "Pause Focus" : "Resume Focus", session.status == .running ? #selector(pauseFocus) : #selector(resumeFocus)))
+            menu.addItem(item("End Focus", #selector(endFocus)))
+        }
         let wake = NSMenuItem(title: host.awake ? "Go to Sleep (Follow Mode)" : "Wake Up and Talk",
                               action: #selector(toggleAwake), keyEquivalent: " ")
         wake.keyEquivalentModifierMask = [.option]
@@ -355,9 +400,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(submenu("Pointer Trail", trailMenu))
 
-        let glow = item("Cursor Glow", #selector(toggleGlow))
-        glow.state = settings.glow ? .on : .off
-        menu.addItem(glow)
         let show = item("Show Cursor", #selector(toggleShow), key: "h")
         show.state = settings.showCursor ? .on : .off
         menu.addItem(show)

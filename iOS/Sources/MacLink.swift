@@ -19,6 +19,8 @@ final class MacLink: ObservableObject {
     var onCommand: ((String, String?) -> Void)?
     private var waiting: [String: (Packet?) -> Void] = [:]
 
+    var onFocusState: ((String) -> Void)?
+
     var onFace: ((FaceState) -> Void)?
 
     private var browser: NWBrowser?
@@ -27,14 +29,10 @@ final class MacLink: ObservableObject {
 
     func start() {
         guard browser == nil else { return }
-        let browser = NWBrowser(for: .bonjour(type: GooglyService.type, domain: nil), using: .googly)
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: GooglyService.type, domain: nil), using: .googly)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self else { return }
             self.macs = results.compactMap(Self.serviceName).sorted()
-            // Move over when the picked Mac shows up while linked to a different one.
-            if let preferred = self.preferredMac, self.currentMac != preferred, self.macs.contains(preferred) {
-                self.link?.cancel()
-            }
             self.connectIfNeeded()
         }
         browser.stateUpdateHandler = { [weak self] state in
@@ -51,6 +49,7 @@ final class MacLink: ObservableObject {
         link?.cancel()
         link = nil
         connected = false
+        let pending = waiting; waiting = [:]; pending.values.forEach { $0(nil) }
     }
 
     private func restart() {
@@ -82,16 +81,18 @@ final class MacLink: ObservableObject {
     }
 
     private func connectIfNeeded() {
+        guard let pairing = PhonePairing.load(), let secret = pairing.key else { return }
         guard link == nil, let results = browser?.browseResults, !results.isEmpty else { return }
-        let result = results.first { Self.serviceName($0) == preferredMac } ?? results.first!
+        guard let result = results.first(where: {
+            guard case let .bonjour(record) = $0.metadata else { return false }
+            return record.getEntry(for: "bluey-id") == .string(pairing.identifier)
+        }) else { return }
         currentMac = Self.serviceName(result)
-        let link = LineConnection(NWConnection(to: result.endpoint, using: .googly))
+        let link = LineConnection(NWConnection(to: result.endpoint, using: .googly), secret: secret, server: false)
         link.onState = { [weak self, weak link] state in
             guard let self, let link, link === self.link else { return }
             switch state {
-            case .ready:
-                self.connected = true
-                link.send(Packet(hello: Self.deviceName))
+            case .ready: break // Authentication, not TCP readiness, marks a paired connection.
             case .failed, .cancelled:
                 self.connected = false
                 let waiting = self.waiting
@@ -106,10 +107,17 @@ final class MacLink: ObservableObject {
                 break
             }
         }
+        link.onAuthenticated = { [weak self, weak link] in
+            guard let self, let link, link === self.link else { return }
+            self.connected = true
+            link.send(Packet(hello: Self.deviceName))
+            link.send(Packet(command: "focusSync"))
+        }
         link.onPacket = { [weak self] packet in
             if let name = packet.hello { self?.macName = name }
             if let face = packet.face { self?.onFace?(face) }
             guard let self, let command = packet.command else { return }
+            if command == "focusState", let text = packet.text { self.onFocusState?(text); return }
             if let callID = packet.callID, let done = self.waiting.removeValue(forKey: callID) {
                 done(packet)
             } else {
@@ -118,6 +126,15 @@ final class MacLink: ObservableObject {
         }
         self.link = link
         link.start()
+    }
+
+    func pair(_ record: PairingRecord) -> Bool {
+        guard PhonePairing.save(record) else { return false }
+        stop()
+        preferredMac = record.service
+        UserDefaults.standard.set(record.service, forKey: "preferredMac")
+        start()
+        return true
     }
 
     func send(_ packet: Packet) {
@@ -131,6 +148,7 @@ final class MacLink: ObservableObject {
         let id = UUID().uuidString
         packet.callID = id
         waiting[id] = done
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in self?.waiting.removeValue(forKey: id)?(nil) }
         link.send(packet)
     }
 

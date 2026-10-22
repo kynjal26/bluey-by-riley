@@ -216,9 +216,7 @@ struct FaceView: View {
 
         let blob = BlobShape.path(in: body)
 
-        var glow = ctx
-        glow.addFilter(.shadow(color: Color(hex: Palette.berry2, opacity: 0.5), radius: 45, x: 0, y: -10))
-        glow.fill(blob, with: .color(Color(hex: Palette.berry3)))
+        ctx.fill(blob, with: .color(Color(hex: Palette.berry3)))
 
         ctx.fill(blob, with: BlobShape.fill(in: body))
         var shine = ctx

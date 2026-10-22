@@ -24,6 +24,8 @@
 	<array>
 		<string>_googly._tcp</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Bluey scans a private pairing code on your Mac to securely connect.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Bluey finds the Mac app on your Wi-Fi so the character can look where it points.</string>
 	<key>NSMicrophoneUsageDescription</key>

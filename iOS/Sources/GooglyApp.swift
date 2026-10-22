@@ -16,6 +16,9 @@ struct RootView: View {
     @StateObject private var link = MacLink()
     @StateObject private var live = LiveVoice()
     @StateObject private var store = SessionStore()
+    @StateObject private var focus = FocusClient()
+    @State private var showFocus = false
+    @State private var scanPairing = false
     @State private var showApp = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var animator = FaceAnimator()
@@ -32,6 +35,7 @@ struct RootView: View {
 
             ModeIndicator(state: live.state)
 
+            FocusFaceHUD(focus: focus, link: link, open: { showFocus = true }, pair: { scanPairing = true })
             SoundButton(link: link, live: live)
 
             // Bluey's app: sessions, transcripts and settings.
@@ -49,7 +53,7 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
 
             if showPairing && !link.connected {
-                PairingView { withAnimation(.easeOut(duration: 0.3)) { showPairing = false } }
+                PairingView { withAnimation(.easeOut(duration: 0.3)) { showPairing = false; scanPairing = true } }
                     .transition(.opacity)
             }
         }
@@ -57,15 +61,22 @@ struct RootView: View {
         .ignoresSafeArea()
         .phoneChrome()
         .fullScreenCover(isPresented: $showApp) {
-            BlueyAppView(store: store, live: live, link: link) { showApp = false }
+            BlueyAppView(store: store, live: live, link: link, focus: focus, openFocus: { showApp = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showFocus = true } }, pairMac: { showApp = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { scanPairing = true } }) { showApp = false }
         }
+        .sheet(isPresented: $showFocus) { FocusDashboard(focus: focus, link: link) }
+        .sheet(isPresented: $scanPairing) { QRPairingView(link: link) }
         .onAppear {
+            focus.attach(link)
+            focus.onFinished = { showFocus = true; live.sleep() }
+            link.onFocusState = { [focus] in focus.receive($0) }
             link.onFace = { [animator] face in animator.receive(face, at: Date().timeIntervalSinceReferenceDate) }
             animator.localTalk = { [live] in live.level }
             wireLiveVoice()
             link.start()
         }
         .onChange(of: link.connected) { _, connected in
+            focus.connectionChanged(connected)
+            if !connected { live.sleep() }
             if connected {
                 withAnimation(.easeOut(duration: 0.4)) { showPairing = false }
                 NotesSync.retryPending(store: store, link: link)
@@ -73,7 +84,12 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { link.start() } else if phase == .background { link.stop() }
+            if phase == .active { link.start() }
+            else {
+                focus.command("focusPause")
+                live.sleep()
+                if phase == .background { link.stop() }
+            }
         }
     }
 
@@ -115,9 +131,9 @@ struct RootView: View {
                 done(reply?.text ?? "The Mac didn't answer.", reply?.image)
             }
         }
-        live.onSessionStart = { [store, live] in
+        live.onSessionStart = { [store] in
+            // Focus voice is ephemeral. Do not record meeting audio by default.
             store.start()
-            if let id = store.currentID { live.recorder.start(session: id) }
         }
         live.resumeContext = { [store] in store.recentText() }
         live.recorder.onChunk = { [store, link] chunk in
@@ -163,6 +179,7 @@ struct RootView: View {
             case "sleep": live.sleep()
             case "codexNote": live.codexNote(text ?? "")
             case "codexChirp": live.chirpAlone()
+            case "focusChirp": live.focusChirp()
             default: break
             }
         }
@@ -208,7 +225,7 @@ struct ModeIndicator: View {
         TimelineView(.animation(paused: look.pulse == 0)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let wave = look.pulse > 0 ? 0.5 + 0.5 * sin(t * look.pulse * 2 * .pi) : 1
-            ZStack(alignment: .topLeading) {
+            ZStack(alignment: .bottomTrailing) {
                 if look.border > 0 {
                     RoundedRectangle(cornerRadius: Self.screenCornerRadius, style: .continuous)
                         .strokeBorder(look.color, lineWidth: look.border)
@@ -225,8 +242,8 @@ struct ModeIndicator: View {
                 .padding(.horizontal, look.label == nil ? 0 : 14)
                 .frame(minWidth: 34, minHeight: 34)
                 .background(Capsule().fill(look.label == nil ? Color.white.opacity(0.06) : look.color))
-                .padding(.top, 14 + look.border)
-                .padding(.leading, 24 + look.border)
+                .padding(.bottom, 14 + look.border)
+                .padding(.trailing, 24 + look.border)
             }
         }
         .ignoresSafeArea()

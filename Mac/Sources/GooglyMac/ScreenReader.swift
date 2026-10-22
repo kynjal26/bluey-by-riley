@@ -80,7 +80,7 @@ enum ScreenReader {
         guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
             throw ScreenReaderError.noDisplay
         }
-        let me = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        let me = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier || $0.bundleIdentifier == Bundle.main.bundleIdentifier }
         let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
         let config = SCStreamConfiguration()
         let scale = NSScreen.screens.first?.backingScaleFactor ?? 2

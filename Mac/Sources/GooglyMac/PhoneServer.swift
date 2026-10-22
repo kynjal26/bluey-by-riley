@@ -22,7 +22,7 @@ final class PhoneServer {
     func start() {
         do {
             let listener = try NWListener(using: .googly)
-            listener.service = NWListener.Service(name: Host.current().localizedName ?? "Mac", type: GooglyService.type)
+            listener.service = NWListener.Service(name: Host.current().localizedName ?? "Mac", type: GooglyService.type, txtRecord: NWTXTRecord(["bluey-id": MacPairing.record.identifier]))
             listener.newConnectionHandler = { [weak self] connection in
                 self?.accept(connection)
             }
@@ -47,18 +47,13 @@ final class PhoneServer {
     }
 
     private func accept(_ connection: NWConnection) {
-        let link = LineConnection(connection)
+        let link = LineConnection(connection, secret: MacPairing.record.key!, server: true)
         let id = ObjectIdentifier(link)
         pending[id] = link  // keep it alive until it is ready
-        link.onState = { [weak self, weak link] state in
-            guard let self, let link else { return }
+        link.onState = { [weak self] state in
+            guard let self else { return }
             switch state {
-            case .ready:
-                self.pending[id] = nil
-                self.phones[id] = (link, nil)
-                link.send(Packet(hello: Host.current().localizedName ?? "Mac"))
-                if let face = self.lastSent { link.send(Packet(face: face)) }
-                self.onPhonesChanged?(self.phoneNames)
+            case .ready: break // Only authenticated peers become phones.
             case .failed, .cancelled:
                 self.pending[id] = nil
                 self.phones[id] = nil
@@ -67,7 +62,15 @@ final class PhoneServer {
                 break
             }
         }
-        link.onPacket = { [weak self] packet in
+        link.onAuthenticated = { [weak self, weak link] in
+            guard let self, let link else { return }
+            self.pending[id] = nil
+            self.phones[id] = (link, nil)
+            link.send(Packet(hello: Host.current().localizedName ?? "Mac"))
+            if let face = self.lastSent { link.send(Packet(face: face)) }
+            self.onPhonesChanged?(self.phoneNames)
+        }
+        link.onPacket = { [weak self, weak link] packet in
             guard let self, self.phones[id] != nil else { return }
             if let name = packet.hello {
                 self.phones[id]?.name = name

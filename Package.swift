@@ -15,5 +15,7 @@ let package = Package(
             dependencies: ["GooglyShared"],
             path: "Mac/Sources/GooglyMac"
         ),
+        .testTarget(name: "GooglyMacTests", dependencies: ["GooglyMac", "GooglyShared"], path: "Tests/GooglyMacTests"),
+        .testTarget(name: "GooglySharedTests", dependencies: ["GooglyShared"], path: "Tests/GooglySharedTests"),
     ]
 )
