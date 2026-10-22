@@ -1,8 +1,9 @@
 import AppKit
 
 MainActor.assumeIsolated {
-    if CommandLine.arguments.contains("--focus-link-test") || CommandLine.arguments.contains("--focus-developer-test") {
-        Task { @MainActor in exit(await FocusLinkProbe.run(developerMode: CommandLine.arguments.contains("--focus-developer-test"))) }
+    if CommandLine.arguments.contains("--focus-link-test") || CommandLine.arguments.contains("--focus-developer-test") || CommandLine.arguments.contains("--focus-nudge-test") {
+        Task { @MainActor in exit(await FocusLinkProbe.run(developerMode: CommandLine.arguments.contains("--focus-developer-test"),
+                                                          nudge: CommandLine.arguments.contains("--focus-nudge-test"))) }
         NSApplication.shared.run()
         return
     }

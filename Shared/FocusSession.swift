@@ -96,18 +96,21 @@ public struct FocusSync: Codable, Sendable {
     }
 }
 
-/// Evidence is counted only across consecutive, fresh, valid checks. Confidence is separate
-/// from P(off_task); use the weaker value. Model estimates are not calibrated certainty.
+/// Count consecutive fresh off-task choices with majority probability. The API's separate
+/// confidence score is diagnostic, not a second probability threshold. Estimates aren't guarantees.
 public struct FocusNudgePolicy {
     private var run: [FocusCheck] = []
     private var lastNudge = -Double.infinity
     private let maximumGap: Double
-    public init(maximumGap: Double = 45) { self.maximumGap = maximumGap }
+    private let developerMode: Bool
+    public init(maximumGap: Double = 45, developerMode: Bool = false) {
+        self.maximumGap = maximumGap; self.developerMode = developerMode
+    }
     public mutating func reset() { run = [] }
     public mutating func observe(_ check: FocusCheck, age: Double) -> Bool {
         guard age >= 0, age <= 20, check.elapsed.isFinite,
               check.activity == .offTask, check.probability.isFinite, check.confidence.isFinite,
-              (0.5...1).contains(check.probability), (0.5...1).contains(check.confidence) else {
+              (0.5...1).contains(check.probability), (0...1).contains(check.confidence) else {
             reset(); return false
         }
         if let last = run.last {
@@ -115,9 +118,11 @@ public struct FocusNudgePolicy {
             if check.elapsed - last.elapsed > maximumGap { reset() }
         }
         run.append(check)
-        let strength = run.map { min($0.probability, $0.confidence) }.reduce(0, +) / Double(run.count)
-        let required = strength >= 0.95 ? 120 : 240 - max(0, strength - 0.5) / 0.45 * 120
-        guard run.count >= 5, check.elapsed - (run.first?.elapsed ?? check.elapsed) >= max(120, required),
+        let strength = run.map(\.probability).reduce(0, +) / Double(run.count)
+        let minimum = developerMode ? 40.0 : 120.0
+        let maximum = developerMode ? 80.0 : 240.0
+        let required = strength >= 0.95 ? minimum : maximum - max(0, strength - 0.5) / 0.45 * (maximum - minimum)
+        guard run.count >= 2, check.elapsed - (run.first?.elapsed ?? check.elapsed) >= max(minimum, required),
               check.elapsed - lastNudge >= 120 else { return false }
         lastNudge = check.elapsed; reset(); return true
     }

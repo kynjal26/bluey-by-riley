@@ -28,6 +28,7 @@ final class FocusCompanion {
     private let hasKey: () -> Bool
     private let capture: () async throws -> ScreenSnapshot
     private let classify: (ScreenSnapshot, FocusSession, Double) async throws -> FocusDecision
+    private let prepareNudge: (ScreenSnapshot, String) async throws -> FocusAPI.Nudge
     private let screenUnlocked: () -> Bool
     private let showsCountdown: Bool
 
@@ -40,10 +41,12 @@ final class FocusCompanion {
          },
          capture: @escaping () async throws -> ScreenSnapshot = { try await ScreenReader.snapshot() },
          classify: @escaping (ScreenSnapshot, FocusSession, Double) async throws -> FocusDecision = { try await FocusAPI.classify($0, session: $1, idle: $2) },
+         prepareNudge: @escaping (ScreenSnapshot, String) async throws -> FocusAPI.Nudge = { try await FocusAPI.nudge($0, task: $1) },
          showsCountdown: Bool = true,
          historyFile: URL? = nil, settings: UserDefaults? = .standard) {
         self.now = now; self.permission = permission; self.hasKey = hasKey
         self.capture = capture; self.classify = classify; self.screenUnlocked = screenUnlocked
+        self.prepareNudge = prepareNudge
         self.showsCountdown = showsCountdown; self.lastTick = now()
         self.settings = settings; self.developerMode = settings?.bool(forKey: "focusDeveloperMode") ?? false
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Googly")
@@ -84,7 +87,8 @@ final class FocusCompanion {
             current?.setDeveloperMode(enabled)
             current?.detail = enabled ? "Developer Mode: clock 4×, next check in 10 seconds" : "Normal speed. Next check in 30 seconds"
         }
-        policy = FocusNudgePolicy(maximumGap: (current?.observationDuration ?? (enabled ? 40 : 30)) * 1.5)
+        policy = FocusNudgePolicy(maximumGap: (current?.observationDuration ?? (enabled ? 40 : 30)) * 1.5,
+                                  developerMode: enabled)
         lastTick = now(); lastCheck = current?.elapsed ?? 0
         if current?.status == .ended { finish() } else { publish(); persist() }
         return enabled ? "Developer Mode on: clock 4×, checks every 10 seconds." : "Developer Mode off: normal clock, checks every 30 seconds."
@@ -100,7 +104,7 @@ final class FocusCompanion {
         guard hasKey() else { return "Add your OpenAI key in Bluey's Mac menu." }
         cancel()
         current = FocusSession(task: task, duration: min(240, max(1, minutes)) * 60, developerMode: developerMode)
-        policy = FocusNudgePolicy(maximumGap: current!.observationDuration * 1.5)
+        policy = FocusNudgePolicy(maximumGap: current!.observationDuration * 1.5, developerMode: developerMode)
         lastTick = now(); lastCheck = 0
         publish(); persist()
         return "Focus started: \(task), \(Int(min(240, max(1, minutes)))) minutes."
@@ -121,6 +125,11 @@ final class FocusCompanion {
     @discardableResult func end() -> String {
         guard hasSession else { return "There's no running focus session." }
         advanceClock(); current?.end(); finish(); return "Focus finished. Your timeline is on the phone."
+    }
+    @discardableResult func testNudge() -> String {
+        guard developerMode, freshConnection else { return "Enable Developer Mode and connect the phone first." }
+        onNudge?("Oi, back to the mission. This is your test nudge.", nil)
+        return "Test nudge sent to the Mac and phone."
     }
     private var freshConnection: Bool { connected && now() - lastPing < 5 }
     private var unlocked: Bool { screenUnlocked() }
@@ -165,30 +174,36 @@ final class FocusCompanion {
                                        probabilities: age <= 20 ? answer.probabilities : nil,
                                        sampleDuration: session.observationDuration)
                 let shouldNudge = self.policy.observe(check, age: age)
-                self.current?.detail = age > 20 ? "Last check was stale; skipped" : answer.activity == .uncertain ? "Not enough context to judge" : "Last check: \(answer.activity == .onTask ? "on task" : "possible detour")"
+                self.current?.detail = age > 20 ? "Last check was stale; skipped" : answer.activity == .uncertain ? "Not enough context to judge" : answer.activity == .onTask ? "On task" : "Off task · checking again before nudging"
                 self.current?.checks.append(check)
                 self.publish(); self.persist()
                 if shouldNudge {
                     // Fresh evidence, separate API. Its output can only show a bubble or point.
                     guard self.allowed else { return }
-                    let fresh = try await ScreenReader.snapshot()
-                    let capturedAt = now()
-                    let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
                     var nudge = FocusAPI.Nudge(message: "Are you sure you're on task right now?", target: nil)
-                    do { nudge = try await FocusAPI.nudge(fresh, task: session.task) }
-                    catch { self.current?.detail = "Nudge wording unavailable; using a gentle reminder" }
-                    guard self.allowed, self.generation == token, !Task.isCancelled else { return }
                     var target: Target?
-                    if let candidate = nudge.target, now() - capturedAt < 15,
-                       app == NSWorkspace.shared.frontmostApplication?.processIdentifier {
-                        // Re-read locally to reject a stale target after a tab, scroll or layout change.
-                        if let verify = try? await ScreenReader.snapshot() {
-                            target = verify.lines.map(\.line).first { $0.text == candidate.text &&
-                                abs($0.rect.midX - candidate.rect.midX) < 10 && abs($0.rect.midY - candidate.rect.midY) < 10 }
+                    self.current?.detail = "Off task · preparing a gentle nudge"; self.publish()
+                    do {
+                        let fresh = try await self.capture()
+                        guard self.allowed, self.generation == token, !Task.isCancelled else { return }
+                        let capturedAt = now()
+                        let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                        nudge = try await self.prepareNudge(fresh, session.task)
+                        if let candidate = nudge.target, now() - capturedAt < 15,
+                           app == NSWorkspace.shared.frontmostApplication?.processIdentifier {
+                            // Re-read locally to reject a stale target after a tab, scroll or layout change.
+                            if let verify = try? await self.capture() {
+                                target = verify.lines.map(\.line).first { $0.text == candidate.text &&
+                                    abs($0.rect.midX - candidate.rect.midX) < 10 && abs($0.rect.midY - candidate.rect.midY) < 10 }
+                            }
                         }
+                    } catch {
+                        // A failed extra capture or wording request must still deliver the fallback bubble.
+                        self.current?.detail = "Off task · using a gentle reminder"
                     }
                     guard self.allowed, self.generation == token, !Task.isCancelled else { return }
                     self.onNudge?(nudge.message, target)
+                    self.current?.detail = "Off task · Bluey nudged you"
                     check.nudged = true
                     if let index = self.current?.checks.firstIndex(where: { $0.id == check.id }) { self.current?.checks[index] = check }
                     self.publish(); self.persist()

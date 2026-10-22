@@ -31,15 +31,28 @@ final class FocusTests: XCTestCase {
         XCTAssertEqual(legacy.realActiveElapsed, legacy.elapsed)
     }
     func testDeveloperObservationsUseAcceleratedNudgeTimeAndStillReset() {
-        var policy = FocusNudgePolicy(maximumGap: 60)
-        for t in [40.0, 80, 120, 160] { XCTAssertFalse(policy.observe(off(t), age: 1)) }
-        XCTAssertTrue(policy.observe(off(200), age: 1)) // fifth check at 50 real seconds
+        var policy = FocusNudgePolicy(maximumGap: 60, developerMode: true)
+        XCTAssertFalse(policy.observe(off(40), age: 1))
+        XCTAssertTrue(policy.observe(off(80), age: 1)) // second check at 20 real seconds
+        XCTAssertFalse(policy.observe(off(120), age: 1))
+        XCTAssertFalse(policy.observe(off(160), age: 1)) // cooldown still active
+        XCTAssertTrue(policy.observe(off(200), age: 1))
         XCTAssertFalse(policy.observe(off(240), age: 21)) // stale uses real seconds
-        for t in [280.0, 320, 360, 400] { XCTAssertFalse(policy.observe(off(t), age: 1)) }
-        XCTAssertTrue(policy.observe(off(440), age: 1))
-        var gap = FocusNudgePolicy(maximumGap: 60)
-        for t in [40.0, 80, 120, 160] { _ = gap.observe(off(t), age: 1) }
-        XCTAssertFalse(gap.observe(off(240), age: 1)) // missing ten-second check resets evidence
+        var gap = FocusNudgePolicy(maximumGap: 60, developerMode: true)
+        XCTAssertFalse(gap.observe(off(40), age: 1))
+        XCTAssertFalse(gap.observe(off(120), age: 1)) // missed check resets the run
+    }
+    func testOverallConfidenceIsNotASecondOffTaskProbabilityVeto() {
+        var policy = FocusNudgePolicy(maximumGap: 60, developerMode: true)
+        for t in [40.0, 80] {
+            XCTAssertFalse(policy.observe(FocusCheck(elapsed: t, activity: .offTask, probability: 0.56, confidence: 0.34), age: 1))
+        }
+        XCTAssertTrue(policy.observe(FocusCheck(elapsed: 120, activity: .offTask, probability: 0.56, confidence: 0.34), age: 1))
+        var normal = FocusNudgePolicy()
+        for t in stride(from: 0.0, through: 180, by: 30) {
+            XCTAssertFalse(normal.observe(FocusCheck(elapsed: t, activity: .offTask, probability: 0.7, confidence: 0.1), age: 1))
+        }
+        XCTAssertTrue(normal.observe(FocusCheck(elapsed: 210, activity: .offTask, probability: 0.7, confidence: 0.1), age: 1))
     }
     func testVoiceRetainsBeginningUntilConnectedAndRejectsEmptyTurns() {
         var turn = VoiceTurnBuffer()
@@ -82,13 +95,13 @@ final class FocusTests: XCTestCase {
             XCTAssertTrue(policy.observe(off(270), age: 1))
         }
     }
-    func testStaleGapAndLowConfidenceDoNotAccumulate() {
+    func testStaleGapAndNonMajorityProbabilityDoNotAccumulate() {
         var policy = FocusNudgePolicy()
         for t in [0.0, 30, 60, 90] { _ = policy.observe(off(t), age: 1) }
         XCTAssertFalse(policy.observe(off(120), age: 21))
         XCTAssertFalse(policy.observe(off(150), age: 1))
         XCTAssertFalse(policy.observe(off(240), age: 1)) // missing checks reset the span
-        var low = off(270); low.confidence = 0.49
+        var low = off(270); low.probability = 0.49
         XCTAssertFalse(policy.observe(low, age: 1))
         XCTAssertFalse(policy.observe(off(300), age: 1))
         XCTAssertFalse(policy.observe(off(330), age: -1))

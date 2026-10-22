@@ -3,6 +3,58 @@ import GooglyShared
 @testable import GooglyMac
 
 final class FocusLifecycleTests: XCTestCase {
+    @MainActor func testRepeatedOffTaskChecksActuallyDeliverANudgeIncludingFailures() async throws {
+        let answer = try FocusDecision.decode(Data(#"{"answers":[{"name":"activity","type":"choice","choice":"off_task","confidence":0.2,"probabilities":[{"value":"on_task","probability":0.005},{"value":"off_task","probability":0.99},{"value":"uncertain","probability":0.005}]}]}"#.utf8))
+        for failure in ["none", "capture", "wording"] {
+            var time = 100.0, captures = 0, wordingCalls = 0, delivered = 0
+            let nudged = expectation(description: "Nudge delivered with \(failure)")
+            let app = FocusCompanion(now: { time }, permission: { true }, hasKey: { true }, screenUnlocked: { true },
+                capture: {
+                    captures += 1
+                    if failure == "capture", captures == 3 { throw CancellationError() }
+                    return ScreenSnapshot(jpeg: Data(), lines: [], size: .zero)
+                }, classify: { _, _, _ in answer }, prepareNudge: { _, _ in
+                    wordingCalls += 1
+                    if failure == "wording" { throw CancellationError() }
+                    return FocusAPI.Nudge(message: "Oi, back to the mission.", target: nil)
+                }, showsCountdown: false,
+                historyFile: URL(fileURLWithPath: "/tmp/bluey-nudge-test-\(failure).json"), settings: nil)
+            app.onNudge = { message, target in
+                delivered += 1
+                XCTAssertNil(target)
+                XCTAssertEqual(message, failure == "none" ? "Oi, back to the mission." : "Are you sure you're on task right now?")
+                nudged.fulfill()
+            }
+            app.setDeveloperMode(true); app.heartbeat(); _ = app.start(task: "Build Bluey in Codex")
+            for _ in 1...20 { time += 1; app.heartbeat(); app.tick(); await Task.yield() }
+            await fulfillment(of: [nudged], timeout: 2)
+            XCTAssertEqual(delivered, 1)
+            XCTAssertEqual(app.current?.checks.count, 2)
+            XCTAssertEqual(app.current?.checks.last?.nudged, true)
+            XCTAssertEqual(wordingCalls, failure == "capture" ? 0 : 1)
+            _ = app.end()
+        }
+    }
+    @MainActor func testPauseDuringNudgePreparationNeverShowsALateBubble() async throws {
+        var time = 100.0
+        var pending: CheckedContinuation<FocusAPI.Nudge, Error>?
+        let preparing = expectation(description: "Nudge preparation started")
+        let answer = try FocusDecision.decode(Data(#"{"answers":[{"name":"activity","type":"choice","choice":"off_task","confidence":0.99,"probabilities":[{"value":"on_task","probability":0.005},{"value":"off_task","probability":0.99},{"value":"uncertain","probability":0.005}]}]}"#.utf8))
+        let app = FocusCompanion(now: { time }, permission: { true }, hasKey: { true }, screenUnlocked: { true },
+            capture: { ScreenSnapshot(jpeg: Data(), lines: [], size: .zero) }, classify: { _, _, _ in answer },
+            prepareNudge: { _, _ in
+                try await withCheckedThrowingContinuation { pending = $0; preparing.fulfill() }
+            }, showsCountdown: false, historyFile: URL(fileURLWithPath: "/tmp/bluey-nudge-pause.json"), settings: nil)
+        app.onNudge = { _, _ in XCTFail("Paused focus must discard the prepared nudge") }
+        app.setDeveloperMode(true); app.heartbeat(); _ = app.start(task: "Build Bluey")
+        for _ in 1...20 { time += 1; app.heartbeat(); app.tick(); await Task.yield() }
+        await fulfillment(of: [preparing], timeout: 2)
+        _ = app.pause()
+        pending?.resume(returning: FocusAPI.Nudge(message: "Too late", target: nil))
+        await Task.yield()
+        XCTAssertFalse(app.current?.checks.contains(where: \.nudged) == true)
+        _ = app.end()
+    }
     @MainActor func testDeveloperCadenceSwitchingSpeedAndPause() async throws {
         var time = 100.0, captures = 0
         let observed = expectation(description: "First ten-second check")

@@ -173,13 +173,15 @@ struct RootView: View {
             }
         }
         live.onCodexNote = { [store] text in store.codex(text) }
-        link.onCommand = { [live] command, text in
+        link.onCommand = { [live, focus] command, text in
             switch command {
             case "wake": live.wake()
             case "sleep": live.sleep()
             case "codexNote": live.codexNote(text ?? "")
             case "codexChirp": live.chirpAlone()
-            case "focusChirp": live.focusChirp()
+            case "focusChirp":
+                focus.receivedNudge(text ?? "Are you sure you're on task right now?")
+                live.focusChirp()
             default: break
             }
         }

@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case "focusPause": result = self.focus.pause()
                 case "focusResume": result = self.focus.resume()
                 case "focusEnd": result = self.focus.end()
+                case "focusTestNudge": result = self.focus.testNudge()
                 case "focusDeveloperMode":
                     if let enabled = args["developerMode"] as? Bool { result = self.focus.setDeveloperMode(enabled) }
                     else { result = "Specify whether Developer Mode is on or off." }

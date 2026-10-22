@@ -18,11 +18,12 @@ final class FocusLinkProbe {
     private var resumedElapsed = 0.0
     private var checked = false
     private let developerTest: Bool
+    private let nudgeTest: Bool
     private var previousDeveloperMode = false
-    private init(developerMode: Bool) { developerTest = developerMode }
+    private init(developerMode: Bool, nudge: Bool) { developerTest = developerMode; nudgeTest = nudge }
 
-    static func run(developerMode: Bool = false) async -> Int32 {
-        let probe = FocusLinkProbe(developerMode: developerMode)
+    static func run(developerMode: Bool = false, nudge: Bool = false) async -> Int32 {
+        let probe = FocusLinkProbe(developerMode: developerMode, nudge: nudge)
         return await withCheckedContinuation { continuation in
             probe.complete = { continuation.resume(returning: $0) }
             probe.start()
@@ -73,9 +74,16 @@ final class FocusLinkProbe {
         link?.send(Packet(command: command, text: text))
     }
     private func receive(_ packet: Packet) {
+        if nudgeTest, phase == "testNudge", packet.command == "focusChirp" {
+            finish(0, "test nudge dispatched through the real Mac bubble and phone chirp path"); return
+        }
         guard packet.command == "focusState", let text = packet.text,
               let state = try? JSONDecoder().decode(FocusSync.self, from: Data(text.utf8)) else { return }
         if phase == "initial" {
+            if nudgeTest {
+                guard state.developerMode == true else { finish(2, "enable Developer Mode first"); return }
+                phase = "testNudge"; send("focusTestNudge"); return
+            }
             if let session = state.current, session.status != .ended { finish(2, "active user session; skipped"); return }
             previousDeveloperMode = state.developerMode ?? false
             if developerTest { phase = "configuring"; send("focusDeveloperMode"); return }

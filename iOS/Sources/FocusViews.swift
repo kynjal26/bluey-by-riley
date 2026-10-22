@@ -17,8 +17,8 @@ struct FocusFaceHUD: View {
                         Text("Developer Mode · 4× clock · checks every 10s")
                             .font(.plexMono(10)).foregroundStyle(.white.opacity(0.8))
                     }
-                    if !live.feedback.isEmpty {
-                        Text(live.feedback).font(.plexSans(12)).lineLimit(2).foregroundStyle(.white.opacity(0.85))
+                    if !feedback.isEmpty {
+                        Text(feedback).font(.plexSans(12)).lineLimit(2).foregroundStyle(.white.opacity(0.85))
                     }
                     if live.state == .asking {
                         Capsule().fill(Color.white).frame(width: 20 + live.inputLevel * 100, height: 3)
@@ -77,6 +77,7 @@ struct FocusFaceHUD: View {
     private var countdown: Double {
         focus.current.flatMap { $0.status == .ended ? nil : $0.remaining } ?? 1800
     }
+    private var feedback: String { focus.nudgeText.isEmpty ? live.feedback : focus.nudgeText }
     private var voiceIcon: String {
         switch live.state {
         case .asleep: return "mic.slash"
@@ -101,7 +102,14 @@ struct FocusFaceHUD: View {
         guard link.connected else { return "Pair your Mac to focus together" }
         guard let session = focus.current, session.status != .ended else { return "Hold Bluey and describe a task" }
         guard focus.fresh else { return "Connection lost · monitoring will pause" }
-        return session.status == .paused ? "Paused" : "Focusing together"
+        if session.status == .paused { return "Paused" }
+        guard let check = session.checks.last(where: { $0.activity != .paused }) else { return "Focusing together" }
+        switch check.activity {
+        case .offTask: return "Off task · \(check.probability.focusPercent) estimate\(check.nudged ? " · nudged" : "")"
+        case .onTask: return "On task"
+        case .uncertain: return "Not sure yet · checking again"
+        default: return "Last check unavailable · trying again"
+        }
     }
 }
 
@@ -121,8 +129,12 @@ struct FocusDashboard: View {
                             set: { focus.command("focusDeveloperMode", developerMode: $0) }
                         )).disabled(!link.connected || !focus.fresh)
                             .accessibilityIdentifier("focusDeveloperMode")
-                        Text("4× clock and a screen check every 10 real seconds. Nudge timing and cooldowns use the faster clock too. Applies immediately; test sessions are labelled in history.")
+                        Text("4× clock and a screen check every 10 real seconds. Repeated off-task checks nudge after about 20–30 real seconds, plus request time. Applies immediately; test sessions are labelled in history.")
                             .font(.plexSans(12)).foregroundStyle(.secondary)
+                        if focus.developerMode {
+                            Button("Test a nudge") { focus.command("focusTestNudge") }
+                                .buttonStyle(.bordered).disabled(!link.connected || !focus.fresh)
+                        }
                     }
                     if let finished = focus.current, finished.status == .ended {
                         Text("Lovely bit of focus.").font(.fredoka(26))
@@ -186,7 +198,7 @@ private struct FocusSummary: View {
             }.buttonStyle(.plain).accessibilityLabel("Inspect focus checks")
             HStack(spacing: 16) {
                 legend("On task", .green, category: "on_task")
-                legend("Detour", Color(hex: 0xEBAC73), category: "off_task")
+                legend("Off task", Color(hex: 0xEBAC73), category: "off_task")
                 legend("Unknown", .gray, category: "uncertain")
             }.font(.plexSans(11))
             Text("Tap a category to see probabilities and confidence. Grey also includes unchecked time. Pauses are excluded.")
@@ -224,7 +236,7 @@ private struct FocusCheckList: View {
                     Picker("Show checks", selection: $category) {
                         Text("All").tag("all")
                         Text("On task").tag("on_task")
-                        Text("Detour").tag("off_task")
+                        Text("Off task").tag("off_task")
                         Text("Unknown").tag("uncertain")
                     }.pickerStyle(.segmented)
                     Text("Each check is a periodic observation. Developer Mode checks every 10 real seconds with a 4× clock. Category probabilities and overall decision confidence are separate model estimates, not guarantees.")
@@ -287,7 +299,7 @@ private struct FocusCheckDetail: View {
                         .font(.plexSans(13)).foregroundStyle(.secondary)
                 }
                 if check.probabilities == nil {
-                    Text("This older check saved only the Detour probability and overall confidence. The other probabilities weren't saved.")
+                    Text("This older check saved only the Off task probability and overall confidence. The other probabilities weren't saved.")
                         .foregroundStyle(.secondary)
                 }
                 if check.nudged { Label("Bluey gave a gentle nudge after this check", systemImage: "bubble.left") }
@@ -300,7 +312,7 @@ private extension FocusActivity {
     var focusName: String {
         switch self {
         case .onTask: return "On task"
-        case .offTask: return "Detour"
+        case .offTask: return "Off task"
         case .uncertain: return "Unknown"
         case .unavailable: return "Unavailable"
         case .paused: return "Paused"
@@ -326,6 +338,6 @@ struct FocusTimeline: View {
                 context.fill(Path(rect), with: .color(check.activity == .onTask ? .green : Color(hex: 0xEBAC73)))
             }
         }.overlay(Rectangle().stroke(.white.opacity(0.3), lineWidth: 1))
-            .accessibilityLabel("Focus timeline: green on task, peach detours, grey unknown")
+            .accessibilityLabel("Focus timeline: green on task, peach off task, grey unknown")
     }
 }

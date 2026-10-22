@@ -34,6 +34,9 @@ final class FocusClient: ObservableObject {
     @Published private(set) var history: [FocusSession] = []
     @Published private(set) var fresh = false
     @Published private(set) var developerMode = false
+    @Published private(set) var nudgeText = ""
+    private var nudgeCount = 0
+    private var lastNudgedAt: Date?
     @Published var message = ""
     var onFinished: (() -> Void)?
     private var revision = -1
@@ -65,17 +68,27 @@ final class FocusClient: ObservableObject {
         guard let state = try? JSONDecoder().decode(FocusSync.self, from: Data(text.utf8)), state.revision > revision else { return }
         let finished = current != nil && current?.id == state.current?.id && current?.status != .ended && state.current?.status == .ended
         revision = state.revision; receivedAt = Date(); fresh = true
+        if current?.id != state.current?.id { nudgeText = "" }
         current = state.current; history = state.history
         developerMode = state.developerMode ?? false
         if let data = try? JSONEncoder().encode(history) { try? data.write(to: file, options: .atomic) }
         writeStatus()
         if finished { onFinished?() }
     }
+    func receivedNudge(_ text: String) {
+        nudgeText = text; nudgeCount += 1
+        let timestamp = Date(); lastNudgedAt = timestamp
+        writeStatus()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            if self?.lastNudgedAt == timestamp { self?.nudgeText = "" }
+        }
+    }
     private func writeStatus() {
         let status: [String: Any] = ["build": "focus-friend-1", "connected": link?.connected == true,
             "fresh": fresh, "sessionStatus": current?.status.rawValue ?? "none", "revision": revision,
             "developerMode": developerMode, "clockRate": current?.clockRate ?? (developerMode ? 4 : 1),
             "elapsed": current?.elapsed ?? 0, "realElapsed": current?.realActiveElapsed ?? 0,
+            "nudgeCount": nudgeCount, "lastNudgedAt": lastNudgedAt?.timeIntervalSince1970 ?? 0,
             "updatedAt": Date().timeIntervalSince1970]
         let target = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("bluey-status.json")
         if let data = try? JSONSerialization.data(withJSONObject: status) { try? data.write(to: target, options: .atomic) }
