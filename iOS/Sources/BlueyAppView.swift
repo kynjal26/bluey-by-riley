@@ -390,6 +390,19 @@ private struct EntryView: View {
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 Spacer(minLength: 120)
             }
+        case .codex:
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color(hex: Palette.berry2))
+                    .padding(.top, 2)
+                Text(entry.text)
+                    .font(.plexMono(11))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+                    .lineLimit(4)
+                Spacer(minLength: 40)
+            }
+            .padding(.leading, 36)
         case .report:
             let lines = entry.text.components(separatedBy: "\n\n")
             VStack(alignment: .leading, spacing: 8) {

@@ -4,7 +4,7 @@ import Foundation
 /// transcript (until the proper one catches up), a question you asked by holding the screen, his replies
 /// and research reports.
 struct TranscriptEntry: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case heard, asked, reply, report, transcript }
+    enum Kind: String, Codable { case heard, asked, reply, report, transcript, codex }
 
     var id = UUID()
     var kind: Kind
@@ -67,6 +67,7 @@ struct BlueySession: Codable, Identifiable, Equatable {
             case .asked: who = "You asked"
             case .reply: who = "Bluey"
             case .report: who = "Research"
+            case .codex: who = "Codex"
             }
             lines.append("[\(time.string(from: entry.time))] \(who): \(entry.text)")
         }
@@ -151,6 +152,13 @@ final class SessionStore: ObservableObject {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         update { $0.entries.append(TranscriptEntry(kind: .report, text: text, time: Date())) }
+    }
+
+    /// A Codex job finished or asked for a yes (only while a session is running).
+    func codex(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, currentID != nil else { return }
+        update { $0.entries.append(TranscriptEntry(kind: .codex, text: text, time: Date())) }
     }
 
     // MARK: Proper transcript (recorded audio, transcribed on the Mac)

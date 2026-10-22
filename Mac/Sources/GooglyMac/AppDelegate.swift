@@ -8,7 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let overlay = CursorOverlay()
     private let server = PhoneServer()
     private var statusItem: NSStatusItem!
-    private lazy var host = RealtimeHost(overlay: overlay)
+    private let codex = CodexController()
+    private lazy var host = RealtimeHost(overlay: overlay, codex: codex)
 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -45,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.onRequest = { [weak self] packet, reply in self?.host.handle(packet, reply: reply) }
         server.start()
         host.onChange = { [weak self] in self?.refreshIcon() }
+        codex.onEvent = { [weak self] event in self?.codexEvent(event) }
+        codex.warmUp()
 
         // ⌥Space wakes him up or puts him back to sleep (same as double tapping him on the phone).
         HotKeys.shared.register(keyCode: kVK_Space, modifiers: optionKey) { [weak self] in self?.toggleAwake() }
@@ -61,6 +64,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.editKeys() }
         }
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        codex.shutdown()
+    }
+
+    /// A Codex job finished or wants a yes. Awake, he hears about it and says so himself (bubble, chirp,
+    /// and it lands in the phone's session history). Asleep, the bubble shows here and the phone chirps.
+    private func codexEvent(_ event: CodexController.Event) {
+        let (note, line, isApproval): (String, String, Bool) = {
+            switch event {
+            case .finished(let note, let line): return (note, line, false)
+            case .approval(let note, let line): return (note, line, true)
+            }
+        }()
+        if host.awake, !server.phoneNames.isEmpty {
+            server.broadcast(Packet(command: "codexNote", text: note))
+            return
+        }
+        Task { @MainActor in
+            // Approvals need the exact ask; finished jobs get a proper one-liner from him.
+            let text = isApproval ? line : (await CodexLine.write(note) ?? line)
+            self.host.showReply(text)
+            self.server.broadcast(Packet(command: "codexChirp", text: text))
+        }
+    }
+
+    @objc private func addCodexFolder() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Folders Codex can work in when you ask Bluey"
+        guard panel.runModal() == .OK else { return }
+        CodexProjects.added = CodexProjects.added + panel.urls.map(\.path).filter { !CodexProjects.added.contains($0) }
+    }
+
+    @objc private func openCodexJob(_ item: NSMenuItem) {
+        if let id = item.representedObject as? String { codex.open(threadID: id) }
+    }
+
+    @objc private func openCodex() { NSWorkspace.shared.open(URL(string: "codex://")!) }
 
     private func refreshIcon() {
         statusItem.button?.appearsDisabled = server.phoneNames.isEmpty
@@ -283,6 +329,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(submenu("Phone Sits Under", phoneMenu))
 
+        if CodexController.isInstalled {
+            let codexMenu = NSMenu()
+            for job in codex.jobs.suffix(8).reversed() {
+                let j = item("\(job.project): \(CodexController.short(job.prompt, 40)) (\(job.status))", #selector(openCodexJob(_:)))
+                j.representedObject = job.threadID
+                codexMenu.addItem(j)
+            }
+            if !codex.jobs.isEmpty { codexMenu.addItem(.separator()) }
+            codexMenu.addItem(item("Add Project Folder…", #selector(addCodexFolder)))
+            codexMenu.addItem(item("Open Codex", #selector(openCodex)))
+            menu.addItem(submenu(codex.approvals.isEmpty ? "Codex" : "Codex (waiting for you)", codexMenu))
+        }
         menu.addItem(item("Open Meeting Notes", #selector(openNotes)))
         menu.addItem(item("Personality…", #selector(editPersonality)))
         menu.addItem(item("OpenAI Key…", #selector(editKeys)))

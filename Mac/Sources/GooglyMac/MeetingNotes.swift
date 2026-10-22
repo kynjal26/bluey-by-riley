@@ -173,6 +173,8 @@ enum MeetingNotes {
                 out.append("> **[\(time)] Riley asked Bluey:** \(text)")
             case "reply":
                 out.append("> **Bluey:** \(text)")
+            case "codex":
+                out.append("> **[\(time)] Codex:** \(text)")
             case "report":
                 let quoted = text.components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
                 out.append("> **Research report:**\n" + quoted)

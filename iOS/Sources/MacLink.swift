@@ -16,7 +16,7 @@ final class MacLink: ObservableObject {
     /// The Mac picked in the speaker panel. Remembered, so the phone goes back to it on launch.
     @Published private(set) var preferredMac: String? = UserDefaults.standard.string(forKey: "preferredMac")
     /// Commands from the Mac, like "wake" and "sleep".
-    var onCommand: ((String) -> Void)?
+    var onCommand: ((String, String?) -> Void)?
     private var waiting: [String: (Packet?) -> Void] = [:]
 
     var onFace: ((FaceState) -> Void)?
@@ -113,7 +113,7 @@ final class MacLink: ObservableObject {
             if let callID = packet.callID, let done = self.waiting.removeValue(forKey: callID) {
                 done(packet)
             } else {
-                self.onCommand?(command)
+                self.onCommand?(command, packet.text)
             }
         }
         self.link = link

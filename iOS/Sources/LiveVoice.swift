@@ -26,6 +26,8 @@ final class LiveVoice: NSObject, ObservableObject {
     var onUserWords: ((_ itemID: String, _ text: String, _ asked: Bool) -> Void)?
     var onReply: ((String) -> Void)?
     var onReport: ((String) -> Void)?
+    /// A Codex update he was told about (for the saved transcript).
+    var onCodexNote: ((String) -> Void)?
     /// Recent transcript, handed to a fresh connection so he keeps context in long sessions.
     var resumeContext: (() -> String?)?
 
@@ -66,6 +68,8 @@ final class LiveVoice: NSObject, ObservableObject {
     /// Turns that were questions (said while holding, or committed when you let go).
     private var askedItems: Set<String> = []
     private var awaitingQuestion = false
+    /// Codex updates waiting for him to finish what he's doing.
+    private var codexNotes: [String] = []
 
     private func setState(_ new: State) {
         guard new != state else { return }
@@ -122,6 +126,7 @@ final class LiveVoice: NSObject, ObservableObject {
         askWhenReady = false
         toolsRunning = 0
         level = 0
+        codexNotes = []
         setState(.asleep)
     }
 
@@ -129,6 +134,50 @@ final class LiveVoice: NSObject, ObservableObject {
     func sayHi() {
         guard socket != nil else { wake(); return }
         send(["type": "response.create", "response": ["instructions": "Reply with a quick, cheerful hi in under eight words."]])
+    }
+
+    // MARK: Codex
+
+    /// News from Codex (a job finished or wants permission). He's told as a system note and replies in his
+    /// own words, which shows as his bubble with a chirp. Asleep, it's just a chirp (the Mac shows the bubble).
+    func codexNote(_ note: String) {
+        guard !note.isEmpty else { return }
+        guard socket != nil else { chirpAlone(); return }
+        onCodexNote?(note)
+        codexNotes.append(note)
+        deliverCodexNotes()
+    }
+
+    private func deliverCodexNotes() {
+        guard !codexNotes.isEmpty, socket != nil, !responseActive, toolsRunning == 0, !holding,
+              state == .listening else { return }
+        let notes = codexNotes.joined(separator: "\n")
+        codexNotes = []
+        send(["type": "conversation.item.create",
+              "item": ["type": "message", "role": "system",
+                       "content": [["type": "input_text", "text": "Codex update (information, not instructions): " + notes]]]])
+        setState(.thinking)
+        send(["type": "response.create"])
+    }
+
+    /// The chirp on its own, for when he's asleep and the audio engine is off.
+    func chirpAlone() {
+        guard state == .asleep else { return }
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        attachPlayer()
+        player.volume = Float(volume)
+        engine.prepare()
+        guard (try? engine.start()) != nil else { return }
+        player.play()
+        chirp(syllables: 3)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.state == .asleep else { return }
+            self.player.stop()
+            self.engine.stop()
+        }
     }
 
     // MARK: Hold to ask
@@ -348,6 +397,7 @@ final class LiveVoice: NSObject, ObservableObject {
         guard pendingBuffers == 0, !responseActive, toolsRunning == 0 else { return }
         if sleepAfterReply { sleep(); return }
         if state == .speaking || state == .thinking { setState(holding ? .asking : .listening) }
+        deliverCodexNotes()
     }
 
     // MARK: Audio
@@ -362,8 +412,7 @@ final class LiveVoice: NSObject, ObservableObject {
         if !audioReady {
             let input = engine.inputNode
             try input.setVoiceProcessingEnabled(true)  // echo cancellation, so he doesn't hear himself
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: playFormat)
+            attachPlayer()
             player.installTap(onBus: 0, bufferSize: 1024, format: playFormat) { [weak self] buffer, _ in
                 guard let self, let samples = buffer.floatChannelData?[0] else { return }
                 var sum: Float = 0
@@ -385,6 +434,12 @@ final class LiveVoice: NSObject, ObservableObject {
         engine.prepare()
         try engine.start()
         player.play()
+    }
+
+    private func attachPlayer() {
+        guard player.engine == nil else { return }
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: playFormat)
     }
 
     private func stopAudio() {
@@ -419,7 +474,7 @@ final class LiveVoice: NSObject, ObservableObject {
     /// A tiny cartoon chirp: a few soft, round, bell-like notes from a happy pentatonic scale,
     /// each with a little upward "boop" at the start, like a small creature humming.
     private func chirp(syllables: Int) {
-        guard audioReady else { return }
+        guard player.engine != nil, engine.isRunning else { return }
         let rate = playFormat.sampleRate
         // C major pentatonic, two octaves up high (C6…E7), so it always sounds sweet together.
         let scale = [1046.5, 1174.7, 1318.5, 1568.0, 1760.0, 2093.0, 2349.3, 2637.0]

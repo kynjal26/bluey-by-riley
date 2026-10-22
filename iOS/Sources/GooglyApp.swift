@@ -156,10 +156,13 @@ struct RootView: View {
                 animator.localMood = .talking
             }
         }
-        link.onCommand = { [live] command in
+        live.onCodexNote = { [store] text in store.codex(text) }
+        link.onCommand = { [live] command, text in
             switch command {
             case "wake": live.wake()
             case "sleep": live.sleep()
+            case "codexNote": live.codexNote(text ?? "")
+            case "codexChirp": live.chirpAlone()
             default: break
             }
         }
