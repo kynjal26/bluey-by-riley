@@ -3,6 +3,44 @@ import CryptoKit
 @testable import GooglyShared
 
 final class FocusTests: XCTestCase {
+    func testDeveloperClockRunsFourTimesFasterAndPauseStillFreezesIt() {
+        var session = FocusSession(task: "Test Bluey", duration: 60, developerMode: true)
+        session.advance(1)
+        XCTAssertEqual(session.elapsed, 4); XCTAssertEqual(session.realActiveElapsed, 1)
+        XCTAssertEqual(session.checkInterval, 10); XCTAssertEqual(session.observationDuration, 40)
+        session.pause("Testing"); session.advance(100)
+        XCTAssertEqual(session.elapsed, 4); XCTAssertEqual(session.realActiveElapsed, 1)
+        session.resume(); session.advance(20)
+        XCTAssertEqual(session.status, .ended); XCTAssertEqual(session.elapsed, 60)
+        XCTAssertEqual(session.realActiveElapsed, 15) // expiry clamps both clocks
+    }
+    func testChangingSpeedPreservesBothClocksAndMarksTestHistory() throws {
+        var session = FocusSession(task: "Test speed changes")
+        session.advance(10); session.setDeveloperMode(true); session.advance(10)
+        XCTAssertEqual(session.elapsed, 50); XCTAssertEqual(session.realActiveElapsed, 20)
+        session.setDeveloperMode(false); session.advance(10)
+        XCTAssertEqual(session.elapsed, 60); XCTAssertEqual(session.realActiveElapsed, 30)
+        XCTAssertEqual(session.usedDeveloperMode, true); XCTAssertEqual(session.clockRate, 1)
+        let sync = FocusSync(current: session, history: [session], revision: 3, developerMode: true)
+        let copy = try JSONDecoder().decode(FocusSync.self, from: JSONEncoder().encode(sync))
+        XCTAssertEqual(copy.developerMode, true); XCTAssertEqual(copy.current, session)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(session)) as? [String: Any])
+        for key in ["developerMode", "usedDeveloperMode", "realElapsed"] { old.removeValue(forKey: key) }
+        let legacy = try JSONDecoder().decode(FocusSession.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertFalse(legacy.isDeveloperMode); XCTAssertEqual(legacy.clockRate, 1)
+        XCTAssertEqual(legacy.realActiveElapsed, legacy.elapsed)
+    }
+    func testDeveloperObservationsUseAcceleratedNudgeTimeAndStillReset() {
+        var policy = FocusNudgePolicy(maximumGap: 60)
+        for t in [40.0, 80, 120, 160] { XCTAssertFalse(policy.observe(off(t), age: 1)) }
+        XCTAssertTrue(policy.observe(off(200), age: 1)) // fifth check at 50 real seconds
+        XCTAssertFalse(policy.observe(off(240), age: 21)) // stale uses real seconds
+        for t in [280.0, 320, 360, 400] { XCTAssertFalse(policy.observe(off(t), age: 1)) }
+        XCTAssertTrue(policy.observe(off(440), age: 1))
+        var gap = FocusNudgePolicy(maximumGap: 60)
+        for t in [40.0, 80, 120, 160] { _ = gap.observe(off(t), age: 1) }
+        XCTAssertFalse(gap.observe(off(240), age: 1)) // missing ten-second check resets evidence
+    }
     func testVoiceRetainsBeginningUntilConnectedAndRejectsEmptyTurns() {
         var turn = VoiceTurnBuffer()
         XCTAssertFalse(turn.canCommit)

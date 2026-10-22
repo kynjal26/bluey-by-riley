@@ -12,12 +12,15 @@ public struct FocusCheck: Codable, Identifiable, Equatable, Sendable {
     public var confidence: Double
     /// Full choice estimates. Optional so history from older builds still decodes.
     public var probabilities: [String: Double]?
+    /// Focus-clock seconds represented by this observation; older checks used 30.
+    public var sampleDuration: Double?
     public var nudged = false
     public init(elapsed: Double, activity: FocusActivity, probability: Double = 0, confidence: Double = 0,
-                probabilities: [String: Double]? = nil) {
+                probabilities: [String: Double]? = nil, sampleDuration: Double? = nil) {
         self.elapsed = elapsed; self.activity = activity
         self.probability = probability; self.confidence = confidence
         self.probabilities = probabilities
+        self.sampleDuration = sampleDuration
     }
     public func estimate(for category: FocusActivity) -> Double? {
         guard [.onTask, .offTask, .uncertain].contains(activity),
@@ -40,9 +43,20 @@ public struct FocusSession: Codable, Identifiable, Equatable, Sendable {
     public var status: Status = .running
     public var detail = "First check in 30 seconds"
     public var checks: [FocusCheck] = []
+    // Optional fields preserve decoding of existing session history.
+    public var developerMode: Bool?
+    public var usedDeveloperMode: Bool?
+    public var realElapsed: Double?
+    public var isDeveloperMode: Bool { developerMode == true }
+    public var clockRate: Double { isDeveloperMode ? 4 : 1 }
+    public var checkInterval: Double { isDeveloperMode ? 10 : 30 } // real seconds
+    public var observationDuration: Double { checkInterval * clockRate }
+    public var realActiveElapsed: Double { realElapsed ?? elapsed }
     public var remaining: Double { max(0, duration - elapsed) }
-    public init(task: String, duration: Double = 1800) {
+    public init(task: String, duration: Double = 1800, developerMode: Bool = false) {
         self.task = String(task.prefix(500)); self.duration = min(14400, max(60, duration))
+        self.developerMode = developerMode; self.usedDeveloperMode = developerMode; self.realElapsed = 0
+        self.detail = "First check in \(Int(checkInterval)) seconds"
     }
     public static func clock(_ seconds: Double) -> String {
         let n = max(0, Int(seconds.rounded(.up)))
@@ -50,7 +64,8 @@ public struct FocusSession: Codable, Identifiable, Equatable, Sendable {
     }
     public mutating func advance(_ seconds: Double) {
         guard status == .running, seconds.isFinite, seconds > 0 else { return }
-        elapsed = min(duration, elapsed + seconds)
+        realElapsed = realActiveElapsed + min(seconds, remaining / clockRate)
+        elapsed = min(duration, elapsed + seconds * clockRate)
         if elapsed >= duration { status = .ended; detail = "Time's up. Lovely bit of focus." }
     }
     public mutating func pause(_ reason: String) {
@@ -60,7 +75,11 @@ public struct FocusSession: Codable, Identifiable, Equatable, Sendable {
     }
     public mutating func resume() {
         guard status == .paused else { return }
-        status = .running; detail = "Resumed. Next check in 30 seconds"
+        status = .running; detail = "Resumed. Next check in \(Int(checkInterval)) seconds"
+    }
+    public mutating func setDeveloperMode(_ enabled: Bool) {
+        developerMode = enabled
+        if enabled { usedDeveloperMode = true }
     }
     public mutating func end() { status = .ended; detail = "Session finished" }
 }
@@ -70,8 +89,10 @@ public struct FocusSync: Codable, Sendable {
     public var history: [FocusSession]
     public var revision: Int
     public var sentAt: Date
-    public init(current: FocusSession?, history: [FocusSession], revision: Int) {
+    public var developerMode: Bool?
+    public init(current: FocusSession?, history: [FocusSession], revision: Int, developerMode: Bool = false) {
         self.current = current; self.history = history; self.revision = revision; self.sentAt = Date()
+        self.developerMode = developerMode
     }
 }
 
@@ -80,7 +101,8 @@ public struct FocusSync: Codable, Sendable {
 public struct FocusNudgePolicy {
     private var run: [FocusCheck] = []
     private var lastNudge = -Double.infinity
-    public init() {}
+    private let maximumGap: Double
+    public init(maximumGap: Double = 45) { self.maximumGap = maximumGap }
     public mutating func reset() { run = [] }
     public mutating func observe(_ check: FocusCheck, age: Double) -> Bool {
         guard age >= 0, age <= 20, check.elapsed.isFinite,
@@ -90,7 +112,7 @@ public struct FocusNudgePolicy {
         }
         if let last = run.last {
             guard check.elapsed > last.elapsed else { reset(); return false }
-            if check.elapsed - last.elapsed > 45 { reset() }
+            if check.elapsed - last.elapsed > maximumGap { reset() }
         }
         run.append(check)
         let strength = run.map { min($0.probability, $0.confidence) }.reduce(0, +) / Double(run.count)

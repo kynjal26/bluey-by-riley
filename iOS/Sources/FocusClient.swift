@@ -33,6 +33,7 @@ final class FocusClient: ObservableObject {
     @Published private(set) var current: FocusSession?
     @Published private(set) var history: [FocusSession] = []
     @Published private(set) var fresh = false
+    @Published private(set) var developerMode = false
     @Published var message = ""
     var onFinished: (() -> Void)?
     private var revision = -1
@@ -65,6 +66,7 @@ final class FocusClient: ObservableObject {
         let finished = current != nil && current?.id == state.current?.id && current?.status != .ended && state.current?.status == .ended
         revision = state.revision; receivedAt = Date(); fresh = true
         current = state.current; history = state.history
+        developerMode = state.developerMode ?? false
         if let data = try? JSONEncoder().encode(history) { try? data.write(to: file, options: .atomic) }
         writeStatus()
         if finished { onFinished?() }
@@ -72,13 +74,17 @@ final class FocusClient: ObservableObject {
     private func writeStatus() {
         let status: [String: Any] = ["build": "focus-friend-1", "connected": link?.connected == true,
             "fresh": fresh, "sessionStatus": current?.status.rawValue ?? "none", "revision": revision,
+            "developerMode": developerMode, "clockRate": current?.clockRate ?? (developerMode ? 4 : 1),
+            "elapsed": current?.elapsed ?? 0, "realElapsed": current?.realActiveElapsed ?? 0,
             "updatedAt": Date().timeIntervalSince1970]
         let target = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("bluey-status.json")
         if let data = try? JSONSerialization.data(withJSONObject: status) { try? data.write(to: target, options: .atomic) }
     }
-    func command(_ command: String, task: String? = nil, minutes: Double = 30) {
+    func command(_ command: String, task: String? = nil, minutes: Double = 30, developerMode: Bool? = nil) {
         guard let link, link.connected else { message = "Connect your paired Mac first."; return }
-        let data = try? JSONSerialization.data(withJSONObject: ["task": task ?? "", "minutes": minutes])
+        var args: [String: Any] = ["task": task ?? "", "minutes": minutes]
+        if let developerMode { args["developerMode"] = developerMode }
+        let data = try? JSONSerialization.data(withJSONObject: args)
         link.request(Packet(command: command, text: data.flatMap { String(data: $0, encoding: .utf8) })) { [weak self] reply in
             self?.message = reply?.text ?? "The Mac didn't answer. Monitoring will pause if disconnected."
         }

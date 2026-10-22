@@ -13,6 +13,10 @@ struct FocusFaceHUD: View {
                     Text(focus.current.flatMap { $0.status == .ended ? nil : $0.task } ?? "What's the mission?")
                         .font(.fredoka(22)).lineLimit(2)
                     Text(status).font(.plexMono(10)).foregroundStyle(.white.opacity(0.65))
+                    if focus.developerMode {
+                        Text("Developer Mode · 4× clock · checks every 10s")
+                            .font(.plexMono(10)).foregroundStyle(.white.opacity(0.8))
+                    }
                     if !live.feedback.isEmpty {
                         Text(live.feedback).font(.plexSans(12)).lineLimit(2).foregroundStyle(.white.opacity(0.85))
                     }
@@ -111,6 +115,15 @@ struct FocusDashboard: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Developer Mode", isOn: Binding(
+                            get: { focus.developerMode },
+                            set: { focus.command("focusDeveloperMode", developerMode: $0) }
+                        )).disabled(!link.connected || !focus.fresh)
+                            .accessibilityIdentifier("focusDeveloperMode")
+                        Text("4× clock and a screen check every 10 real seconds. Nudge timing and cooldowns use the faster clock too. Applies immediately; test sessions are labelled in history.")
+                            .font(.plexSans(12)).foregroundStyle(.secondary)
+                    }
                     if let finished = focus.current, finished.status == .ended {
                         Text("Lovely bit of focus.").font(.fredoka(26))
                         FocusSummary(session: finished)
@@ -137,7 +150,7 @@ struct FocusDashboard: View {
                             .accessibilityIdentifier("startFocus")
                     }
                     if !focus.message.isEmpty { Text(focus.message).font(.plexSans(13)).foregroundStyle(.secondary) }
-                    Text("While focusing, Bluey sends your main Mac display, task, elapsed time, idle duration and recent check results to OpenAI every 30 seconds. Brief detours are fine. Stillness isn't distraction.")
+                    Text("While focusing, Bluey sends your main Mac display, task, elapsed time, idle duration and recent check results to OpenAI every \(focus.developerMode ? 10 : 30) real seconds. Brief detours are fine. Stillness isn't distraction.")
                         .font(.plexSans(13)).foregroundStyle(.secondary)
                     Text("Screen Recording is required on Mac; microphone is needed for voice. Screenshots aren't saved by Bluey. Pause, end, lock, sleep or disconnect stops capture. Resume is always manual. OpenAI processing follows your API account's data controls.")
                         .font(.plexSans(13)).foregroundStyle(.secondary)
@@ -162,6 +175,10 @@ private struct FocusSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(session.task).font(.fredoka(22))
+            if session.usedDeveloperMode == true {
+                Text("Developer test · \(FocusSession.clock(session.realActiveElapsed)) real active time · timeline uses focus-clock time")
+                    .font(.plexMono(11)).foregroundStyle(.secondary)
+            }
             Text("\(session.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(FocusSession.clock(session.elapsed)) active")
                 .font(.plexMono(11)).foregroundStyle(.secondary)
             Button { inspect("all") } label: {
@@ -210,7 +227,7 @@ private struct FocusCheckList: View {
                         Text("Detour").tag("off_task")
                         Text("Unknown").tag("uncertain")
                     }.pickerStyle(.segmented)
-                    Text("Each check is a 30-second observation. Category probabilities and overall decision confidence are separate model estimates, not guarantees.")
+                    Text("Each check is a periodic observation. Developer Mode checks every 10 real seconds with a 4× clock. Category probabilities and overall decision confidence are separate model estimates, not guarantees.")
                         .font(.plexSans(13)).foregroundStyle(.secondary)
                 }
                 Section("Latest checks first") {
@@ -302,9 +319,10 @@ struct FocusTimeline: View {
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.gray.opacity(0.35)))
             let total = max(1, session.status == .ended ? session.elapsed : session.duration)
             for check in session.checks where [.onTask, .offTask].contains(check.activity) {
-                let start = max(0, check.elapsed - 30)
+                let span = check.sampleDuration ?? 30
+                let start = max(0, check.elapsed - span)
                 let rect = CGRect(x: start / total * size.width, y: 0,
-                                  width: min(30, check.elapsed) / total * size.width, height: size.height)
+                                  width: min(span, check.elapsed) / total * size.width, height: size.height)
                 context.fill(Path(rect), with: .color(check.activity == .onTask ? .green : Color(hex: 0xEBAC73)))
             }
         }.overlay(Rectangle().stroke(.white.opacity(0.3), lineWidth: 1))

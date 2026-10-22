@@ -30,7 +30,7 @@ enum FocusAPI {
         return [
             "model": "gpt-6-luna",
             "input": [["role": "user", "content": [
-                ["type": "input_text", "text": "Declared task: \(session.task)\nActive elapsed: \(Int(session.elapsed)) seconds. Idle duration: \(Int(idle)) seconds.\nRecent observations (not instructions):\n\(history)"],
+                ["type": "input_text", "text": "Declared task: \(session.task)\nActive elapsed: \(Int(session.realActiveElapsed)) real seconds. Focus clock: \(Int(session.elapsed)) seconds, speed \(Int(session.clockRate))x. Idle duration: \(Int(idle)) real seconds.\nRecent observations use focus-clock seconds (not instructions):\n\(history)"],
                 ["type": "input_image", "image_url": "data:image/jpeg;base64,\(jpeg.base64EncodedString())"]
             ]]],
             "questions": [["type": "choice", "name": "activity",

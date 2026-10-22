@@ -17,9 +17,12 @@ final class FocusLinkProbe {
     private var pausedElapsed = 0.0
     private var resumedElapsed = 0.0
     private var checked = false
+    private let developerTest: Bool
+    private var previousDeveloperMode = false
+    private init(developerMode: Bool) { developerTest = developerMode }
 
-    static func run() async -> Int32 {
-        let probe = FocusLinkProbe()
+    static func run(developerMode: Bool = false) async -> Int32 {
+        let probe = FocusLinkProbe(developerMode: developerMode)
         return await withCheckedContinuation { continuation in
             probe.complete = { continuation.resume(returning: $0) }
             probe.start()
@@ -63,7 +66,9 @@ final class FocusLinkProbe {
     private func send(_ command: String) {
         var text: String?
         if command == "focusStart" {
-            text = (try? JSONSerialization.data(withJSONObject: ["task": task, "minutes": 1])).flatMap { String(data: $0, encoding: .utf8) }
+            text = (try? JSONSerialization.data(withJSONObject: ["task": task, "minutes": developerTest ? 2 : 1])).flatMap { String(data: $0, encoding: .utf8) }
+        } else if command == "focusDeveloperMode" {
+            text = (try? JSONSerialization.data(withJSONObject: ["developerMode": phase == "restoring" ? previousDeveloperMode : true])).flatMap { String(data: $0, encoding: .utf8) }
         }
         link?.send(Packet(command: command, text: text))
     }
@@ -72,13 +77,30 @@ final class FocusLinkProbe {
               let state = try? JSONDecoder().decode(FocusSync.self, from: Data(text.utf8)) else { return }
         if phase == "initial" {
             if let session = state.current, session.status != .ended { finish(2, "active user session; skipped"); return }
+            previousDeveloperMode = state.developerMode ?? false
+            if developerTest { phase = "configuring"; send("focusDeveloperMode"); return }
             phase = "starting"; send("focusStart"); return
+        }
+        if phase == "configuring", state.developerMode == true {
+            print("LIVE Developer Mode: enabled and synchronized")
+            phase = "starting"; send("focusStart"); return
+        }
+        if phase == "restoring", state.developerMode == previousDeveloperMode {
+            finish(0, "4x clock and ten-second checks verified; original setting restored"); return
         }
         guard let session = state.current, session.task == task else { return }
         if phase == "starting", session.status == .running { phase = "running"; print("LIVE app focus: started") }
         if phase == "running", let check = session.checks.last, check.activity != .paused {
             checked = [.onTask, .offTask, .uncertain].contains(check.activity)
             print("LIVE scheduled check at \(Int(check.elapsed))s: \(check.activity.rawValue)")
+            if developerTest {
+                guard session.isDeveloperMode, check.sampleDuration == 40,
+                      check.elapsed >= 39, check.elapsed < 60,
+                      abs(session.elapsed - session.realActiveElapsed * 4) < 0.1 else {
+                    finish(1, "unexpected Developer Mode timing"); return
+                }
+                print("LIVE 4x clock: observation at \(String(format: "%.1f", check.elapsed / 4)) real seconds")
+            }
             phase = "pausing"; send("focusPause")
         } else if phase == "pausing", session.status == .paused {
             pausedElapsed = session.elapsed; pausedAt = Date(); phase = "paused"
@@ -91,6 +113,7 @@ final class FocusLinkProbe {
             phase = "ending"; send("focusEnd")
         } else if phase == "ending", session.status == .ended {
             guard state.history.contains(where: { $0.id == session.id }), checked else { finish(1, "ended, but no valid live check/history"); return }
+            if developerTest { phase = "restoring"; send("focusDeveloperMode"); return }
             finish(0, "pause/resume/end synchronized; history contains the live check")
         }
     }

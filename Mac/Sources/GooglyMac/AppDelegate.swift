@@ -71,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case "focusPause": result = self.focus.pause()
                 case "focusResume": result = self.focus.resume()
                 case "focusEnd": result = self.focus.end()
+                case "focusDeveloperMode":
+                    if let enabled = args["developerMode"] as? Bool { result = self.focus.setDeveloperMode(enabled) }
+                    else { result = "Specify whether Developer Mode is on or off." }
                 case "focusSync": self.focus.sync()
                 default: break
                 }
@@ -203,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pauseFocus() { focus.pause() }
     @objc private func resumeFocus() { _ = focus.resume() }
     @objc private func endFocus() { _ = focus.end() }
+    @objc private func toggleFocusDeveloperMode() { focus.setDeveloperMode(!focus.developerMode) }
     @objc private func setTrail(_ item: NSMenuItem) {
         if let raw = item.representedObject as? String, let trail = PointerTrail(rawValue: raw) { settings.trail = trail }
     }
@@ -321,6 +325,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item(session.status == .running ? "Pause Focus" : "Resume Focus", session.status == .running ? #selector(pauseFocus) : #selector(resumeFocus)))
             menu.addItem(item("End Focus", #selector(endFocus)))
         }
+        let developer = item("Developer Mode (4× · checks every 10s)", #selector(toggleFocusDeveloperMode))
+        developer.state = focus.developerMode ? .on : .off
+        menu.addItem(developer)
         let wake = NSMenuItem(title: host.awake ? "Go to Sleep (Follow Mode)" : "Wake Up and Talk",
                               action: #selector(toggleAwake), keyEquivalent: " ")
         wake.keyEquivalentModifierMask = [.option]

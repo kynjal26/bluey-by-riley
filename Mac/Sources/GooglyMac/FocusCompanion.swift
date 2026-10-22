@@ -10,6 +10,8 @@ final class FocusCompanion {
     var onChange: ((FocusSync) -> Void)?
     var onNudge: ((String, Target?) -> Void)?
     var connected = false
+    private(set) var developerMode: Bool
+    private let settings: UserDefaults?
     private var lastPing = -Double.infinity
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var lastCheck: Double = 0
@@ -39,10 +41,11 @@ final class FocusCompanion {
          capture: @escaping () async throws -> ScreenSnapshot = { try await ScreenReader.snapshot() },
          classify: @escaping (ScreenSnapshot, FocusSession, Double) async throws -> FocusDecision = { try await FocusAPI.classify($0, session: $1, idle: $2) },
          showsCountdown: Bool = true,
-         historyFile: URL? = nil) {
+         historyFile: URL? = nil, settings: UserDefaults? = .standard) {
         self.now = now; self.permission = permission; self.hasKey = hasKey
         self.capture = capture; self.classify = classify; self.screenUnlocked = screenUnlocked
         self.showsCountdown = showsCountdown; self.lastTick = now()
+        self.settings = settings; self.developerMode = settings?.bool(forKey: "focusDeveloperMode") ?? false
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Googly")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         file = historyFile ?? dir.appendingPathComponent("focus-history.json")
@@ -72,6 +75,21 @@ final class FocusCompanion {
     var monitoring: Bool { current?.status == .running }
     var hasSession: Bool { current != nil && current?.status != .ended }
 
+    @discardableResult func setDeveloperMode(_ enabled: Bool) -> String {
+        guard enabled != developerMode else { return "Developer Mode is already \(enabled ? "on" : "off")." }
+        if monitoring { advanceClock() }
+        cancel()
+        developerMode = enabled; settings?.set(enabled, forKey: "focusDeveloperMode")
+        if hasSession {
+            current?.setDeveloperMode(enabled)
+            current?.detail = enabled ? "Developer Mode: clock 4×, next check in 10 seconds" : "Normal speed. Next check in 30 seconds"
+        }
+        policy = FocusNudgePolicy(maximumGap: (current?.observationDuration ?? (enabled ? 40 : 30)) * 1.5)
+        lastTick = now(); lastCheck = current?.elapsed ?? 0
+        if current?.status == .ended { finish() } else { publish(); persist() }
+        return enabled ? "Developer Mode on: clock 4×, checks every 10 seconds." : "Developer Mode off: normal clock, checks every 30 seconds."
+    }
+
     @discardableResult func start(task: String, minutes: Double = 30) -> String {
         let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !task.isEmpty else { return "Tell me the task first." }
@@ -80,8 +98,9 @@ final class FocusCompanion {
         guard freshConnection else { return "Connect the paired phone first." }
         guard permission() else { return "Screen Recording is off. Enable Bluey in System Settings > Privacy & Security > Screen Recording, then reopen Bluey." }
         guard hasKey() else { return "Add your OpenAI key in Bluey's Mac menu." }
-        cancel(); policy = FocusNudgePolicy()
-        current = FocusSession(task: task, duration: min(240, max(1, minutes)) * 60)
+        cancel()
+        current = FocusSession(task: task, duration: min(240, max(1, minutes)) * 60, developerMode: developerMode)
+        policy = FocusNudgePolicy(maximumGap: current!.observationDuration * 1.5)
         lastTick = now(); lastCheck = 0
         publish(); persist()
         return "Focus started: \(task), \(Int(min(240, max(1, minutes)))) minutes."
@@ -122,7 +141,7 @@ final class FocusCompanion {
         advanceClock()
         if current?.status == .ended { finish(); return }
         publish()
-        if let session = current, session.elapsed - lastCheck >= 30, work == nil {
+        if let session = current, session.elapsed - lastCheck >= session.observationDuration, work == nil {
             lastCheck = session.elapsed
             check(session: session)
         }
@@ -143,7 +162,8 @@ final class FocusCompanion {
                 let age = now() - began
                 var check = FocusCheck(elapsed: session.elapsed, activity: age <= 20 ? answer.activity : .unavailable,
                                        probability: answer.probability, confidence: answer.confidence,
-                                       probabilities: age <= 20 ? answer.probabilities : nil)
+                                       probabilities: age <= 20 ? answer.probabilities : nil,
+                                       sampleDuration: session.observationDuration)
                 let shouldNudge = self.policy.observe(check, age: age)
                 self.current?.detail = age > 20 ? "Last check was stale; skipped" : answer.activity == .uncertain ? "Not enough context to judge" : "Last check: \(answer.activity == .onTask ? "on task" : "possible detour")"
                 self.current?.checks.append(check)
@@ -176,7 +196,8 @@ final class FocusCompanion {
             } catch {
                 guard self.allowed, self.generation == token, !Task.isCancelled else { return }
                 self.policy.reset()
-                self.current?.checks.append(FocusCheck(elapsed: session.elapsed, activity: .unavailable))
+                self.current?.checks.append(FocusCheck(elapsed: session.elapsed, activity: .unavailable,
+                                                      sampleDuration: session.observationDuration))
                 self.current?.detail = "Check unavailable: \(error.localizedDescription.prefix(180))"
                 self.publish(); self.persist()
                 // Authentication/permission issues need intervention, not repeated paid calls.
@@ -206,7 +227,7 @@ final class FocusCompanion {
     private func publish() {
         revision += 1
         if showsCountdown { countdown.update(current) }
-        onChange?(FocusSync(current: current, history: history, revision: revision))
+        onChange?(FocusSync(current: current, history: history, revision: revision, developerMode: developerMode))
     }
 }
 
@@ -214,10 +235,11 @@ final class FocusCompanion {
 private final class FocusCountdown {
     private var window: NSPanel?
     private let label = NSTextField(labelWithString: "")
+    private let modeLabel = NSTextField(labelWithString: "")
     func update(_ session: FocusSession?) {
         guard let session, session.status != .ended else { window?.orderOut(nil); return }
         if window == nil, let screen = NSScreen.screens.first {
-            let panel = NSPanel(contentRect: CGRect(x: screen.visibleFrame.maxX - 452, y: screen.visibleFrame.minY + 24, width: 420, height: 112),
+            let panel = NSPanel(contentRect: CGRect(x: screen.visibleFrame.maxX - 452, y: screen.visibleFrame.minY + 24, width: 420, height: 132),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
             panel.level = .floating; panel.ignoresMouseEvents = true
@@ -225,9 +247,13 @@ private final class FocusCountdown {
             label.frame = CGRect(x: 0, y: 0, width: 420, height: 108)
             label.font = .monospacedDigitSystemFont(ofSize: 76, weight: .semibold)
             label.textColor = .white; label.alignment = .right
-            panel.contentView?.addSubview(label); window = panel
+            modeLabel.frame = CGRect(x: 0, y: 108, width: 420, height: 20)
+            modeLabel.font = .systemFont(ofSize: 12, weight: .medium)
+            modeLabel.textColor = .white; modeLabel.alignment = .right
+            panel.contentView?.addSubview(label); panel.contentView?.addSubview(modeLabel); window = panel
         }
         label.stringValue = (session.status == .paused ? "Ⅱ " : "") + FocusSession.clock(session.remaining)
+        modeLabel.stringValue = session.isDeveloperMode ? "DEVELOPER MODE · 4×" : ""
         window?.orderFrontRegardless()
     }
 }

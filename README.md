@@ -12,9 +12,11 @@ Bluey is a little blueberry focus friend. Keep your iPhone sideways under your M
 
 The task appears at the phone's top left, with a large white countdown at bottom right on both devices. Small pause/resume, end and Focus icons sit at the phone's bottom left, alongside the listening status icon. Hold Bluey's face to speak. Controls are also available in the Mac menu and through voice. **⌃⌥S** pauses focus and stops computer control. Pause, end, expiry, Mac lock/sleep, phone backgrounding or disconnect stops monitoring. Reconnection and unlocking never resume it automatically. A missing heartbeat is detected within five seconds; outstanding results are discarded.
 
+**Developer Mode:** turn it on at the top of **Focus** on the phone or in Bluey's Mac menu. The countdown runs **4× faster**, and the Mac checks the screen every **10 real seconds**. Nudge timing and cooldowns use the faster focus clock; the minimum of five valid observations still applies. Changes take effect immediately on both devices, including during a session. Test sessions are labelled in history with their real active time, and the setting is remembered on the Mac. A fresh installation defaults to normal speed. Turning it off restores the real-time clock and 30-second checks. Pause, lock and disconnect still stop capture normally.
+
 ## Screen sharing and privacy
 
-During a running focus session the Mac captures its **main display every 30 seconds**, excluding Bluey's own windows, and sends a reduced JPEG to OpenAI with the declared task, active elapsed time, idle duration and up to eight recent check results. If a nudge becomes due, a separate Responses request receives a fresh image and OCR target labels to prepare a short bubble and optional pointer target. No automatic clicking, app closing, website blocking or Codex delegation occurs in the monitoring path.
+During a running focus session the Mac captures its **main display every 30 seconds** (every **10 real seconds in Developer Mode**), excluding Bluey's own windows, and sends a reduced JPEG to OpenAI with the declared task, active elapsed time, idle duration and up to eight recent check results. Real active time is distinguished from the accelerated test clock. If a nudge becomes due, a separate Responses request receives a fresh image and OCR target labels to prepare a short bubble and optional pointer target. No automatic clicking, app closing, website blocking or Codex delegation occurs in the monitoring path.
 
 Bluey keeps screenshots in memory and does not save them by default. Local focus history stores the task, timings, classifications, model probability/confidence estimates and nudge markers, not images or OCR text. Mac history is `~/Library/Application Support/Googly/focus-history.json`; a copy is retained on the phone. OpenAI's processing and retention follow your API account's data controls; “not saved by Bluey” is not a promise of zero retention by OpenAI. Pause before opening anything you don't want shared.
 
@@ -28,7 +30,7 @@ Related tutorials, research, reading and waiting for a build can support the tas
 
 - Only consecutive off-task choices with both P(off_task) and confidence at least 0.5 accumulate evidence.
 - Use the mean of the weaker of those two values. At 0.95 or above, require at least five checks spanning **120 seconds**. From 0.5 to 0.95 the required span falls gradually from **240 to 120 seconds**. For example 0.65 requires about 200 seconds, reached at the next 30-second check.
-- On-task, uncertain, failed, malformed, stale (>20 seconds), out-of-order or missing (>45-second gap) checks reset the evidence run. Pause/end reset it too.
+- On-task, uncertain, failed, malformed, stale (>20 real seconds), out-of-order or missing checks reset the evidence run. A missing check means a gap over 1.5 observation intervals (45 focus-clock seconds normally, 60 in Developer Mode). Pause/end reset it too. Changing Developer Mode discards pending results and starts fresh evidence.
 - A nudge resets the run and has a 120-second cooldown. Model estimates are not calibrated certainty; these are conservative initial product thresholds, not measured accuracy guarantees.
 - Responses (`gpt-5.5`, structured output, `store: false`) writes one gentle sentence. A failure falls back to “Are you sure you're on task right now?” It can select only an existing OCR line, with an exact matching quote. The app re-reads its position and checks the foreground app before pointing. Ambiguous or changed targets get a bubble alone.
 
@@ -79,6 +81,8 @@ swift run GooglyMac --focus-api-test
 ```
 
 With a separate signed Bluey app already running, `build/Bluey.app/Contents/MacOS/GooglyMac --focus-link-test` exercises real Bonjour discovery, authenticated encryption, a 30-second desktop capture/Decisions check and synchronized pause/resume/end. It creates a labelled integration-test entry in history and skips an existing active user session. `--focus-screen-test` makes one real desktop capture/Decisions request without saving an image. These probes share your screen with OpenAI; do not run them while displaying private content.
+
+`build/Bluey.app/Contents/MacOS/GooglyMac --focus-developer-test` checks the same live path at 4× clock speed and the ten-real-second cadence, then restores the previous Developer Mode setting. It also skips an existing active session.
 
 Real phone pairing, hold-to-start voice, permission prompts, chirps, pointing and full two-to-four-minute monitoring still need a device run. A successful build or synthetic probe alone is not proof of these behaviors.
 
